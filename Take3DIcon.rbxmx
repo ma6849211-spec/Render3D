@@ -1,0 +1,2279 @@
+<roblox xmlns:xmime="http://www.w3.org/2005/05/xmlmime" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://www.roblox.com/roblox.xsd" version="4">
+	<External>null</External>
+	<External>nil</External>
+	<Item class="Script" referent="RBX4E107780C4FB49D0AD20D37938373261">
+		<Properties>
+			<ProtectedString name="Source"><![CDATA[--!nocheck
+-- Remove bg: Roblox Studio plugin.
+-- Load a PNG/JPG from your PC, a Roblox image ID, or render a selected model, and the background is removed.
+if not plugin then return end
+
+local Matte = require(script:WaitForChild('Matte'))
+local Effects = require(script:WaitForChild('IconEffects'))
+local HttpService = game:GetService('HttpService')
+
+local AssetService = game:GetService('AssetService')
+local StudioService = game:GetService('StudioService')
+local Selection = game:GetService('Selection')
+local InsertService = game:GetService('InsertService')
+local CaptureService = game:GetService('CaptureService')
+local StarterGui = game:GetService('StarterGui')
+local ChangeHistoryService = game:GetService('ChangeHistoryService')
+local Lighting = game:GetService('Lighting')
+
+local readu8 = buffer.readu8
+
+---------------------------------------------------------------- look
+local function rgb(r, g, b) return Color3.fromRGB(r, g, b) end
+-- Polished dark creator-tool palette: deep ink surfaces, cool borders, vivid periwinkle accent.
+local BG, PANEL, BORDER = rgb(15, 18, 28), rgb(25, 30, 44), rgb(50, 59, 79)
+local TEXT, DIM = rgb(241, 243, 250), rgb(153, 163, 184)
+local ACCENT, GOOD, WARN, BAD = rgb(124, 116, 255), rgb(76, 201, 145), rgb(255, 190, 92), rgb(255, 103, 125)
+
+local function new(class, props, parent)
+  local inst = Instance.new(class)
+  for k, v in pairs(props) do inst[k] = v end
+  if parent then inst.Parent = parent end
+  return inst
+end
+local function corner(inst, r) new('UICorner', { CornerRadius = UDim.new(0, r) }, inst) end
+local function stroke(inst, color)
+  new('UIStroke', { Color = color, Thickness = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, inst)
+end
+local function label(parent, text, size, color, props)
+  local p = { Text = text, Font = Enum.Font.Gotham, TextSize = size, TextColor3 = color, BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left }
+  for k, v in pairs(props or {}) do p[k] = v end
+  return new('TextLabel', p, parent)
+end
+local function button(parent, text, color, props)
+  local p = { Text = text, Font = Enum.Font.GothamMedium, TextSize = 13, TextColor3 = TEXT, BackgroundColor3 = color, Size = UDim2.new(0, 100, 0, 30), BorderSizePixel = 0 }
+  for k, v in pairs(props or {}) do p[k] = v end
+  local b = new('TextButton', p, parent)
+  corner(b, 9)
+  local edge = new('UIStroke', { Color = BORDER, Transparency = 0.18, Thickness = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, b)
+  b.AutoButtonColor = false
+  local base = b.BackgroundColor3
+  b.MouseEnter:Connect(function()
+    b.BackgroundColor3 = base:Lerp(rgb(255, 255, 255), 0.08)
+    edge.Transparency = 0
+  end)
+  b.MouseLeave:Connect(function()
+    b.BackgroundColor3 = base
+    edge.Transparency = 0.18
+  end)
+  b.MouseButton1Down:Connect(function() b.BackgroundColor3 = base:Lerp(rgb(0, 0, 0), 0.12) end)
+  b.MouseButton1Up:Connect(function() if b:IsDescendantOf(game) then b.BackgroundColor3 = base:Lerp(rgb(255, 255, 255), 0.08) end end)
+  return b
+end
+
+local function makeSegmented(parent, options, selected, onSelect, props)
+  local frame = new('Frame', props or {}, parent)
+  frame.BackgroundTransparency = 1
+  new('UIListLayout', { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 4) }, frame)
+  local buttons = {}
+  local function highlight(value)
+    for _, entry in ipairs(buttons) do
+      entry.button.BackgroundColor3 = (entry.value == value) and ACCENT or PANEL
+    end
+  end
+  for _, opt in ipairs(options) do
+    local b = button(frame, opt[1], PANEL, { Size = UDim2.new(1 / #options, -4, 1, 0), TextSize = 12 })
+    buttons[#buttons + 1] = { button = b, value = opt[2] }
+    b.MouseButton1Click:Connect(function()
+      highlight(opt[2])
+      onSelect(opt[2])
+    end)
+  end
+  highlight(selected)
+  return { frame = frame, set = highlight }
+end
+
+local controlSetters = {}
+local function makeToggle(parent, order, text, value, onChange)
+  local row = new('Frame', { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 26), LayoutOrder = order }, parent)
+  label(row, text, 13, TEXT, { Size = UDim2.new(1, -52, 1, 0) })
+  local pill = new('TextButton', { Text = '', AutoButtonColor = false, AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, 0, 0.5, 0), Size = UDim2.fromOffset(40, 20), BackgroundColor3 = BORDER }, row)
+  corner(pill, 10)
+  local knob = new('Frame', { AnchorPoint = Vector2.new(0, 0.5), Size = UDim2.fromOffset(16, 16), Position = UDim2.new(0, 2, 0.5, 0), BackgroundColor3 = rgb(255, 255, 255) }, pill)
+  corner(knob, 8)
+  local function apply()
+    pill.BackgroundColor3 = value and ACCENT or BORDER
+    knob.Position = value and UDim2.new(1, -18, 0.5, 0) or UDim2.new(0, 2, 0.5, 0)
+  end
+  apply()
+  controlSetters[text] = function(v) value = v apply() end
+  pill.MouseButton1Click:Connect(function()
+    value = not value
+    apply()
+    onChange(value)
+  end)
+end
+
+---------------------------------------------------------------- state + widget
+local state = {
+  w = 0, h = 0, name = '', kind = nil,
+  origImg = nil, origBuf = nil, resultImg = nil, resultBuf = nil, bbox = nil,
+  bgColor = nil, pickMode = false, token = 0, lastAssetId = nil, modelView = '3/4',
+  opts = {
+    tolerance = 20, softness = 2, edgeShift = 0, defringe = true, keepLargest = true, removeHoles = false, autoCrop = true, maxSide = nil,
+    protectBright = true,
+    fov = 90, brightness = 100,
+    strokeOn = false, strokeWidth = 4, strokeColor = { 255, 255, 255 },
+    style = 'Clean', glow = false, shadow = false, auraRadius = 8,
+    yaw = 0, pitch = 15, roll = 0, zoom = 100,
+    animationId = '', poseTime = 0, variant = 'Original',
+    lightPreset = 'Scene', panX = 0, panY = 0, exportPadding = 16,
+  },
+}
+local VIEW_ORDER = { '3/4', 'Front', 'Back', 'Side', 'Top' }
+local VIEW_DIRS = {
+  ['3/4'] = Vector3.new(0.7, 0.35, -0.9),
+  Front = Vector3.new(0, 0.12, -1),
+  Back = Vector3.new(0, 0.12, 1),
+  Side = Vector3.new(1, 0.12, 0),
+  Top = Vector3.new(0, 1, -0.05),
+}
+
+local toolbar = plugin:CreateToolbar('Render3D')
+local toggleButton = toolbar:CreateButton('Render3D', 'Capture models, refine icons and upload images', 'rbxassetid://118332118882244', 'Render3D')
+local widget = plugin:CreateDockWidgetPluginGui('RemoveBGWidget', DockWidgetPluginGuiInfo.new(Enum.InitialDockState.Float, true, true, 440, 740, 360, 520))
+widget.Enabled = true
+widget.Title = 'Render3D  ·  Studio'
+widget.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+toggleButton.Click:Connect(function() widget.Enabled = not widget.Enabled end)
+widget:GetPropertyChangedSignal('Enabled'):Connect(function() toggleButton:SetActive(widget.Enabled) end)
+
+local root = new('Frame', { Size = UDim2.fromScale(1, 1), BackgroundColor3 = BG, BorderSizePixel = 0 }, widget)
+
+local setView, updateSwatch, runRemove, setBackdrop
+
+local function makeSlider(parent, order, text, min, max, value, onCommit)
+  local row = new('Frame', { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 40), LayoutOrder = order }, parent)
+  label(row, text, 13, TEXT, { Size = UDim2.new(1, -60, 0, 18) })
+  local valueLabel = label(row, '', 13, ACCENT, { Position = UDim2.new(1, -56, 0, 0), Size = UDim2.fromOffset(56, 18), TextXAlignment = Enum.TextXAlignment.Right })
+  local track = new('Frame', { Position = UDim2.new(0, 0, 0, 27), Size = UDim2.new(1, 0, 0, 6), BackgroundColor3 = BORDER }, row)
+  corner(track, 3)
+  local fill = new('Frame', { Size = UDim2.fromScale(0, 1), BackgroundColor3 = ACCENT }, track)
+  corner(fill, 3)
+  local knob = new('Frame', { AnchorPoint = Vector2.new(0.5, 0.5), Size = UDim2.fromOffset(14, 14), Position = UDim2.fromScale(0, 0.5), BackgroundColor3 = rgb(255, 255, 255), ZIndex = 3 }, track)
+  corner(knob, 7)
+  local hit = new('TextButton', { Text = '', AutoButtonColor = false, BackgroundTransparency = 1, Position = UDim2.new(0, 0, 0, 16), Size = UDim2.new(1, 0, 0, 24), ZIndex = 4 }, row)
+  local current, dragging = value, false
+  local function refresh()
+    local t = (current - min) / (max - min)
+    fill.Size = UDim2.fromScale(t, 1)
+    knob.Position = UDim2.fromScale(t, 0.5)
+    valueLabel.Text = tostring(current)
+  end
+  local function setFromX(x)
+    local t = math.clamp((x - track.AbsolutePosition.X) / math.max(1, track.AbsoluteSize.X), 0, 1)
+    current = math.floor(min + t * (max - min) + 0.5)
+    refresh()
+  end
+  local function finish()
+    if dragging then
+      dragging = false
+      onCommit(current)
+    end
+  end
+  local function onMove(input)
+    if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then setFromX(input.Position.X) end
+  end
+  local function onUp(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then finish() end
+  end
+  hit.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+      dragging = true
+      setFromX(input.Position.X)
+    end
+  end)
+  hit.InputChanged:Connect(onMove)
+  hit.InputEnded:Connect(onUp)
+  root.InputChanged:Connect(onMove)
+  root.InputEnded:Connect(onUp)
+  refresh()
+  controlSetters[text] = function(v) current = math.clamp(v, min, max) refresh() end
+end
+
+---------------------------------------------------------------- top of the window
+label(root, 'Render3D', 20, TEXT, { Font = Enum.Font.GothamBold, Position = UDim2.fromOffset(14, 9), Size = UDim2.new(1, -28, 0, 25) })
+local nameLabel = label(root, 'CAPTURE  /  REFINE  /  PUBLISH', 10, DIM, { Font = Enum.Font.GothamMedium, Position = UDim2.fromOffset(15, 35), Size = UDim2.new(1, -30, 0, 14), TextTruncate = Enum.TextTruncate.AtEnd })
+
+local sourceRow = new('Frame', { BackgroundTransparency = 1, Position = UDim2.fromOffset(12, 52), Size = UDim2.new(1, -24, 0, 28) }, root)
+new('UIListLayout', { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6) }, sourceRow)
+local importBtn = button(sourceRow, 'Import file', ACCENT, { Size = UDim2.new(0.34, -4, 1, 0) })
+local modelBtn = button(sourceRow, 'Use selected model', PANEL, { Size = UDim2.new(0.40, -4, 1, 0) })
+local viewBtn = button(sourceRow, 'View: 3/4', PANEL, { Size = UDim2.new(0.26, -4, 1, 0) })
+stroke(modelBtn, BORDER)
+stroke(viewBtn, BORDER)
+
+local idBox = new('TextBox', { Text = '', PlaceholderText = 'Roblox image ID or link', PlaceholderColor3 = DIM, ClearTextOnFocus = false, Font = Enum.Font.Gotham, TextSize = 13, TextColor3 = TEXT, TextXAlignment = Enum.TextXAlignment.Left, BackgroundColor3 = PANEL, Position = UDim2.fromOffset(12, 86), Size = UDim2.new(1, -96, 0, 28) }, root)
+corner(idBox, 6)
+stroke(idBox, BORDER)
+new('UIPadding', { PaddingLeft = UDim.new(0, 8) }, idBox)
+local copyIdBtn = button(root, 'Copy ID', ACCENT, { Position = UDim2.new(1, -78, 0, 86), Size = UDim2.fromOffset(66, 28) })
+
+local previewFrame = new('Frame', { Position = UDim2.fromOffset(12, 124), Size = UDim2.new(1, -24, 0.36, 0), BackgroundColor3 = rgb(33, 39, 54), ClipsDescendants = true, BorderSizePixel = 0 }, root)
+corner(previewFrame, 12)
+stroke(previewFrame, BORDER)
+local checker = new('ImageLabel', { Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, ScaleType = Enum.ScaleType.Tile, TileSize = UDim2.fromOffset(20, 20), ZIndex = 1 }, previewFrame)
+local holder = new('Frame', { Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, ZIndex = 2 }, previewFrame)
+new('UIPadding', { PaddingTop = UDim.new(0, 10), PaddingBottom = UDim.new(0, 10), PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10) }, holder)
+local preview = new('ImageLabel', { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, ZIndex = 3 }, holder)
+local aspect = new('UIAspectRatioConstraint', { AspectRatio = 1 }, preview)
+local emptyLabel = label(previewFrame, 'Nothing loaded yet', 14, rgb(90, 94, 104), { Size = UDim2.fromScale(1, 1), TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 4 })
+
+local viewRow = new('Frame', { BackgroundTransparency = 1, Position = UDim2.new(0, 12, 0.36, 130), Size = UDim2.new(1, -24, 0, 26) }, root)
+local viewSeg = makeSegmented(viewRow, { { 'Result', 'Result' }, { 'Original', 'Original' } }, 'Result', function(v) setView(v) end, { Size = UDim2.new(0.38, 0, 1, 0) })
+local backdropSeg = makeSegmented(viewRow, { { 'Checker', 'Checker' }, { 'White', 'White' }, { 'Black', 'Black' }, { 'Green', 'Green' } }, 'Checker', function(v) setBackdrop(v) end, { Position = UDim2.new(0.40, 0, 0, 0), Size = UDim2.new(0.60, 0, 1, 0) })
+
+local infoLabel = label(root, '', 12, DIM, { Position = UDim2.new(0, 12, 0.36, 162), Size = UDim2.new(1, -24, 0, 30), TextWrapped = true, TextYAlignment = Enum.TextYAlignment.Top })
+local statusLabel = label(root, 'Ready.', 12, GOOD, { Position = UDim2.new(0, 12, 0.36, 194), Size = UDim2.new(1, -24, 0, 28), TextWrapped = true, TextYAlignment = Enum.TextYAlignment.Top })
+
+---------------------------------------------------------------- helpers
+local function setStatus(text, color)
+  statusLabel.Text = text
+  statusLabel.TextColor3 = color or DIM
+end
+
+local function setImageOn(target, img)
+  local ok, err = pcall(function() target.ImageContent = Content.fromObject(img) end)
+  if not ok then setStatus('Could not show the image: ' .. tostring(err), BAD) end
+end
+
+local function makeChecker()
+  local ok, img = pcall(function()
+    local e = AssetService:CreateEditableImage({ Size = Vector2.new(16, 16) })
+    local b = buffer.create(16 * 16 * 4)
+    for y = 0, 15 do
+      for x = 0, 15 do
+        local light = ((x // 8) + (y // 8)) % 2 == 0
+        local v = light and 226 or 186
+        local i = (y * 16 + x) * 4
+        buffer.writeu8(b, i, v)
+        buffer.writeu8(b, i + 1, v)
+        buffer.writeu8(b, i + 2, v)
+        buffer.writeu8(b, i + 3, 255)
+      end
+    end
+    e:WritePixelsBuffer(Vector2.zero, Vector2.new(16, 16), b)
+    return e
+  end)
+  if ok then setImageOn(checker, img) end
+end
+
+local BACKDROPS = { White = rgb(255, 255, 255), Black = rgb(0, 0, 0), Green = rgb(0, 177, 64) }
+setBackdrop = function(mode)
+  checker.Visible = (mode == 'Checker')
+  if BACKDROPS[mode] then previewFrame.BackgroundColor3 = BACKDROPS[mode] end
+  backdropSeg.set(mode)
+end
+
+local function currentLayout()
+  local o = state.opts
+  local strokePad = (o.strokeOn and math.max(0, o.strokeWidth) or 0) + 2
+  local auraPad = (o.glow or o.shadow) and o.auraRadius * 2 or 0
+  return Matte.exportLayout(state.w, state.h, state.bbox, { autoCrop = o.autoCrop, pad = o.exportPadding + strokePad + auraPad, snap = 8, maxSide = o.maxSide })
+end
+
+local function refreshInfo()
+  emptyLabel.Visible = (state.origImg == nil)
+  if not state.origImg then
+    infoLabel.Text = ''
+    return
+  end
+  local shown = preview.AbsoluteSize
+  local text = string.format('Native %d×%d · Shown %d×%d', state.w, state.h, math.floor(shown.X), math.floor(shown.Y))
+  local color = DIM
+  if state.resultBuf then
+    local L = currentLayout()
+    text = text .. string.format(' · Export %d×%d', L.ew, L.eh)
+    if math.max(L.ew, L.eh) > 1024 then
+      text = text .. ' · over the 1024 px texture limit'
+      color = WARN
+    end
+  end
+  infoLabel.Text = text
+  infoLabel.TextColor3 = color
+end
+preview:GetPropertyChangedSignal('AbsoluteSize'):Connect(refreshInfo)
+
+setView = function(view)
+  viewSeg.set(view)
+  local img = (view == 'Result' and state.resultImg) or state.origImg
+  if img then
+    setImageOn(preview, img)
+    aspect.AspectRatio = state.w / math.max(state.h, 1)
+  else
+    pcall(function() preview.ImageContent = Content.none end)
+  end
+  refreshInfo()
+end
+
+local uiPreview = { entries = {}, image = nil }
+local function restoreUIPreview()
+  for _, entry in ipairs(uiPreview.entries) do
+    pcall(function() entry.target.ImageContent = entry.content end)
+  end
+  table.clear(uiPreview.entries)
+  if uiPreview.image then uiPreview.image:Destroy() uiPreview.image = nil end
+end
+widget:GetPropertyChangedSignal('Enabled'):Connect(function()
+  if not widget.Enabled then restoreUIPreview() end
+end)
+plugin.Unloading:Connect(restoreUIPreview)
+
+local function applyResult(buf, bbox)
+  restoreUIPreview()
+  state.lastAssetId = nil
+  local size = Vector2.new(state.w, state.h)
+  if not state.resultImg or state.resultImg.Size ~= size then
+    if state.resultImg then state.resultImg:Destroy() end
+    state.resultImg = AssetService:CreateEditableImage({ Size = size })
+  end
+  state.resultImg:WritePixelsBuffer(Vector2.zero, size, buf)
+  state.resultBuf = buf
+  state.bbox = bbox
+  setView('Result')
+end
+
+local function setSource(img, name, kind)
+  local size = img.Size
+  local ok, buf = pcall(function() return img:ReadPixelsBuffer(Vector2.zero, size) end)
+  if not ok then
+    setStatus('Could not read the pixels: ' .. tostring(buf), BAD)
+    return false
+  end
+  state.token += 1
+  restoreUIPreview()
+  if state.resultImg then state.resultImg:Destroy() end
+  if state.origImg and state.origImg ~= img then state.origImg:Destroy() end
+  state.origImg, state.origBuf = img, buf
+  state.w, state.h = math.floor(size.X + 0.5), math.floor(size.Y + 0.5)
+  state.name, state.kind = name, kind
+  state.resultImg, state.resultBuf, state.bbox = nil, nil, nil
+  state.bgColor, state.pickMode = nil, false
+  state.lastAssetId = nil
+  nameLabel.Text = name
+  updateSwatch()
+  setView('Original')
+  return true
+end
+
+local function loadContent(content)
+  local ok, res = pcall(function() return AssetService:CreateEditableImageAsync(content) end)
+  if ok and res then return res end
+  return nil, tostring(res)
+end
+
+---------------------------------------------------------------- post-processing (stroke, brightness)
+local function postProcess(buf, hooks)
+  local o = state.opts
+  if o.brightness ~= 100 then
+    buf = Matte.applyBrightness(buf, state.w, state.h, o.brightness / 100, hooks)
+    if not buf then return nil end
+  end
+  if o.strokeOn and o.strokeWidth > 0 then
+    buf = Matte.applyStroke(buf, state.w, state.h, o.strokeWidth, o.strokeColor, hooks)
+    if not buf then return nil end
+  end
+  buf = Effects.apply(buf, state.w, state.h, o.style, hooks)
+  if not buf then return nil end
+  if o.glow then buf = Effects.aura(buf, state.w, state.h, o.auraRadius, false, hooks) end
+  if not buf then return nil end
+  if o.shadow then buf = Effects.aura(buf, state.w, state.h, o.auraRadius, true, hooks) end
+  return buf
+end
+
+---------------------------------------------------------------- remove the background
+runRemove = function()
+  if not state.origBuf then
+    setStatus('Load an image first.', WARN)
+    return
+  end
+  state.token += 1
+  local token = state.token
+  local function sourceCurrent() return token == state.token end
+  if state.kind == 'image' and state.opts.preserveAlpha ~= false then
+    -- A translucent rectangle is not a cutout. Only trust a predominantly
+    -- fully transparent perimeter; all other images still need cleanup.
+    local clear, total = 0, 0
+    local function sample(x, y)
+      total += 1
+      if readu8(state.origBuf, (y * state.w + x) * 4 + 3) <= 4 then clear += 1 end
+    end
+    for x = 0, state.w - 1 do sample(x, 0) sample(x, state.h - 1) end
+    for y = 1, state.h - 2 do sample(0, y) sample(state.w - 1, y) end
+    if total > 0 and clear / total >= 0.95 and not state.bgColor then
+      local out = buffer.create(buffer.len(state.origBuf))
+      buffer.copy(out, 0, state.origBuf)
+      out = postProcess(out, { step = function() task.wait() return sourceCurrent() end })
+      if not sourceCurrent() then return end
+      if out then applyResult(out, nil) end
+      setStatus('Clear outer background detected; original cutout preserved. Use Pick from image to remove any remaining background.', GOOD)
+      return
+    end
+  end
+  if state.kind == 'model' or state.kind == 'scene' then
+    local out = buffer.create(buffer.len(state.origBuf))
+    buffer.copy(out, 0, state.origBuf)
+    out = postProcess(out, { step = function() task.wait() return sourceCurrent() end })
+    if not sourceCurrent() then return end
+    if out then applyResult(out, state.bbox) end
+    setStatus('Model icon effects updated. Capture again to change the camera.', GOOD)
+    return
+  end
+  local o = state.opts
+  local t0 = os.clock()
+  setStatus('Removing background...', WARN)
+  local hooks = {
+    step = function(frac, text)
+      if token ~= state.token then return false end
+      setStatus(string.format('%s... %d%%', text, math.floor(frac * 100)), WARN)
+      task.wait()
+      return true
+    end,
+  }
+  local ok, out, info = pcall(Matte.process, state.origBuf, state.w, state.h, {
+    tolerance = o.tolerance, softness = o.softness, edgeShift = o.edgeShift,
+    defringe = o.defringe, keepLargest = o.keepLargest, removeHoles = o.removeHoles,
+    protectBright = o.protectBright,
+    bgColor = state.bgColor,
+  }, hooks)
+  if token ~= state.token then return end
+  if not ok then
+    setStatus('Something went wrong: ' .. tostring(out), BAD)
+    return
+  end
+  if not out then return end
+  out = postProcess(out, hooks)
+  if token ~= state.token or not out then return end
+  applyResult(out, info.bbox)
+  if not info.bbox or info.subjectFraction < 0.02 then
+    setStatus('Almost nothing is left. The subject may be the same colour as the background. Lower Tolerance or use Pick from image.', WARN)
+  elseif info.subjectFraction > 0.97 then
+    setStatus('Almost nothing was removed. Use Pick from image and click the background.', WARN)
+  else
+    setStatus(string.format('Ready. (%.1fs)', os.clock() - t0), GOOD)
+  end
+end
+
+---------------------------------------------------------------- sources
+local function importFile()
+  setStatus('Choose an image file...', DIM)
+  local ok, file = pcall(function() return StudioService:PromptImportFile({ 'png', 'jpg', 'jpeg', 'bmp', 'tga' }) end)
+  if not ok then
+    setStatus('Import failed: ' .. tostring(file), BAD)
+    return
+  end
+  if not file then
+    setStatus('Import cancelled.', DIM)
+    return
+  end
+  setStatus('Reading the image...', WARN)
+  local ok2, img = pcall(function() return AssetService:CreateEditableImageAsync(Content.fromUri(file:GetTemporaryId())) end)
+  if not ok2 or not img then
+    setStatus('Could not read that image: ' .. tostring(img), BAD)
+    return
+  end
+  if setSource(img, file.Name, 'image') then runRemove() end
+end
+
+local function loadById(text)
+  local id = tonumber(string.match(text or '', '(%d+)'))
+  if not id then
+    setStatus('Paste a Roblox image ID or link first.', WARN)
+    return
+  end
+  setStatus('Loading rbxassetid://' .. id .. '...', WARN)
+  local img, err = loadContent(Content.fromAssetId(id))
+  if not img then
+    -- a Decal ID points at a wrapper: look inside for the real image ID
+    local okM, model = pcall(function() return InsertService:LoadAsset(id) end)
+    if okM and model then
+      local inner
+      for _, d in ipairs(model:GetDescendants()) do
+        if d:IsA('Decal') or d:IsA('Texture') then
+          inner = d.Texture
+          break
+        end
+      end
+      model:Destroy()
+      local innerId = inner and tonumber(string.match(inner, '(%d+)'))
+      if innerId and innerId ~= id then img, err = loadContent(Content.fromAssetId(innerId)) end
+    end
+  end
+  if not img then
+    setStatus('Could not load that asset (Studio only opens images you own or that Roblox allows): ' .. tostring(err), BAD)
+    return
+  end
+  if setSource(img, 'rbxassetid://' .. id, 'image') then runRemove() end
+end
+
+local RunService = game:GetService('RunService')
+local function settle()
+  -- give Studio a few real frames to redraw the viewport before a screenshot
+  for _ = 1, 5 do RunService.Heartbeat:Wait() end
+  task.wait(0.6)
+end
+
+local function takeScreenshot()
+  local contentId, done = nil, false
+  local ok, err = pcall(function()
+    CaptureService:CaptureScreenshot(function(id)
+      contentId = id
+      done = true
+    end)
+  end)
+  if not ok then return nil, tostring(err) end
+  local t0 = os.clock()
+  while not done and os.clock() - t0 < 15 do task.wait() end
+  if not contentId then return nil, 'the screenshot never came back' end
+  local img, err2 = loadContent(Content.fromUri(contentId))
+  if not img then return nil, err2 end
+  return img
+end
+
+local stopRequested = false
+local function renderModel(target)
+  target = target or Selection:Get()[1]
+  if not target or not (target:IsA('Model') or target:IsA('BasePart')) then
+    setStatus('Select a Model or Part in the Explorer first.', WARN)
+    return
+  end
+  local cam = workspace.CurrentCamera
+  if not cam then
+    setStatus('No viewport camera found.', BAD)
+    return
+  end
+  state.token += 1
+  setStatus('Rendering the model on a white and a black backdrop...', WARN)
+  local oldCF, oldFov, oldFocus, oldSel = cam.CFrame, cam.FieldOfView, cam.Focus, Selection:Get()
+  Selection:Set({})
+  -- game GUIs in StarterGui are drawn in the edit viewport and would end up in the shot, so hide them
+  local hiddenGuis = {}
+  for _, d in ipairs(StarterGui:GetDescendants()) do
+    if d:IsA('LayerCollector') and d.Enabled then
+      hiddenGuis[#hiddenGuis + 1] = d
+      d.Enabled = false
+    end
+  end
+  local clone, back, imgW, imgB
+  local lightingBefore = {}
+  for _, key in ipairs({ 'Ambient', 'OutdoorAmbient', 'Brightness', 'ClockTime', 'ExposureCompensation' }) do lightingBefore[key] = Lighting[key] end
+  local ok, problem = pcall(function()
+    if state.opts.lightPreset == 'Bright studio' then
+      Lighting.Ambient = rgb(130, 140, 160) Lighting.OutdoorAmbient = rgb(150, 155, 170)
+      Lighting.Brightness = 2 Lighting.ClockTime = 14 Lighting.ExposureCompensation = 0
+    elseif state.opts.lightPreset == 'Dramatic' then
+      Lighting.Ambient = rgb(40, 45, 65) Lighting.OutdoorAmbient = rgb(55, 65, 90)
+      Lighting.Brightness = 3 Lighting.ClockTime = 17 Lighting.ExposureCompensation = 0
+    elseif state.opts.lightPreset == 'Flat' then
+      Lighting.Ambient = rgb(200, 200, 200) Lighting.OutdoorAmbient = rgb(200, 200, 200)
+      Lighting.Brightness = 0 Lighting.ExposureCompensation = 0
+    end
+    clone = target:Clone()
+    if not clone then error('Model cannot be cloned. Enable Archivable on the source.') end
+    for _, d in ipairs(clone:GetDescendants()) do
+      if d:IsA('BaseScript') then d:Destroy()
+      elseif d:IsA('BasePart') then d.Anchored = true d.CanCollide = false end
+      if d:IsA('ParticleEmitter') or d:IsA('Trail') then d.Enabled = false end
+    end
+    if clone:IsA('BasePart') then clone.Anchored = true clone.CanCollide = false end
+    local variantColor = ({ Red = rgb(245, 80, 90), Blue = rgb(65, 145, 255), Gold = rgb(255, 202, 65) })[state.opts.variant]
+    if variantColor then
+      local objects = clone:GetDescendants()
+      table.insert(objects, clone)
+      for _, d in ipairs(objects) do
+        if d:IsA('BasePart') then d.Color = variantColor end
+      end
+    end
+    local cf, size
+    if clone:IsA('Model') then cf, size = clone:GetBoundingBox() else cf, size = clone.CFrame, clone.Size end
+    -- shoot a copy high up in the sky so nothing else is in the frame
+    local origin = CFrame.new(0, 40000, 0)
+    -- Match the live preview's world-space orientation: relocate only.
+    -- Inverting the bounding-box CFrame also undid the source model's rotation.
+    local moved = CFrame.new(origin.Position - cf.Position)
+    if clone:IsA('Model') then clone:PivotTo(moved * clone:GetPivot()) else clone.CFrame = moved * clone.CFrame end
+    clone.Parent = workspace
+    local animationId = string.match(state.opts.animationId or '', '%d+')
+    if animationId then
+      local host = clone:FindFirstChildWhichIsA('Humanoid', true) or clone:FindFirstChildWhichIsA('AnimationController', true)
+      if not host then error('This model has no Humanoid or AnimationController for posing.') end
+      local animator = host:FindFirstChildOfClass('Animator') or Instance.new('Animator', host)
+      local root = clone:FindFirstChild('HumanoidRootPart', true) or (clone:IsA('Model') and clone.PrimaryPart)
+      if not root then error('Posed rigs need a HumanoidRootPart or PrimaryPart.') end
+      for _, d in ipairs(clone:GetDescendants()) do if d:IsA('BasePart') then d.Anchored = d == root end end
+      local animation = Instance.new('Animation')
+      animation.AnimationId = 'rbxassetid://' .. animationId
+      animation.Parent = clone
+      local track = animator:LoadAnimation(animation)
+      track:Play(0, 1, 0)
+      local deadline = os.clock() + 8
+      repeat task.wait() until track.Length > 0 or os.clock() > deadline
+      if track.Length == 0 then error('Animation could not load. Check ID, ownership and rig compatibility.') end
+      track.TimePosition = math.clamp(state.opts.poseTime, 0, math.max(0, track.Length - 0.001))
+      settle()
+      local posedCF, posedSize = clone:GetBoundingBox()
+      clone:PivotTo(CFrame.new(origin.Position - posedCF.Position) * clone:GetPivot())
+      size = posedSize
+    end
+    local radius = math.max(size.Magnitude / 2, 0.5)
+    local fov = state.opts.fov
+    local vp = cam.ViewportSize
+    local vfov = math.rad(fov)
+    local hfov = 2 * math.atan(math.tan(vfov / 2) * (vp.X / math.max(vp.Y, 1)))
+    local dist = radius / math.sin(math.min(vfov, hfov) / 2) * 1.08 * 100 / state.opts.zoom
+    local dir = (VIEW_DIRS[state.modelView] or VIEW_DIRS['3/4']).Unit
+    if state.modelView == 'Custom' then
+      local yaw, pitch = math.rad(state.opts.yaw), math.rad(state.opts.pitch)
+      dir = Vector3.new(math.sin(yaw) * math.cos(pitch), math.sin(pitch), -math.cos(yaw) * math.cos(pitch))
+    end
+    local center = origin.Position
+    local camPos = center + dir * dist
+    local behind = dist + radius + 4
+    local half = math.tan(math.max(vfov, hfov) / 2) * behind * 2.5 + 50
+    back = Instance.new('Part')
+    back.Anchored = true
+    back.CanCollide = false
+    back.CastShadow = false
+    back.Locked = true
+    back.Material = Enum.Material.Neon
+    back.Size = Vector3.new(half * 2, half * 2, 1)
+    back.CFrame = CFrame.lookAt(center - dir * (radius + 4), camPos)
+    back.Color = rgb(255, 255, 255)
+    back.Parent = workspace
+    cam.FieldOfView = fov
+    -- Studio re-aims the editor camera at its old Focus a moment after CFrame is set, so move Focus too
+    cam.Focus = CFrame.new(center)
+    cam.CFrame = CFrame.lookAt(camPos, center) * CFrame.new(size.Magnitude * state.opts.panX / 100, size.Magnitude * state.opts.panY / 100, 0) * CFrame.Angles(0, 0, math.rad(state.opts.roll))
+    cam.Focus = CFrame.new(cam.CFrame.Position + cam.CFrame.LookVector * dist)
+    settle()
+    local e1, e2
+    imgW, e1 = takeScreenshot()
+    if not imgW then error(e1) end
+    if stopRequested then error('Capture cancelled') end
+    back.Color = rgb(0, 0, 0)
+    settle()
+    imgB, e2 = takeScreenshot()
+    if not imgB then error(e2) end
+  end)
+  if back then back:Destroy() end
+  if clone then clone:Destroy() end
+  for key, value in pairs(lightingBefore) do Lighting[key] = value end
+  for _, g in ipairs(hiddenGuis) do
+    if g.Parent then g.Enabled = true end
+  end
+  cam.Focus = oldFocus
+  cam.CFrame = oldCF
+  cam.FieldOfView = oldFov
+  Selection:Set(oldSel)
+  if not ok then
+    if imgW then imgW:Destroy() end
+    if imgB then imgB:Destroy() end
+    setStatus('Model render failed: ' .. tostring(problem), BAD)
+    return
+  end
+  local sW, sB = imgW.Size, imgB.Size
+  if sW ~= sB then
+    imgW:Destroy() imgB:Destroy()
+    setStatus('The two renders had different sizes. Try again.', BAD)
+    return
+  end
+  local w, h = math.floor(sW.X + 0.5), math.floor(sW.Y + 0.5)
+  local okM, out, info = pcall(function()
+    local bW = imgW:ReadPixelsBuffer(Vector2.zero, sW)
+    local bB = imgB:ReadPixelsBuffer(Vector2.zero, sB)
+    return Matte.fromTwoShots(bW, bB, w, h, { step = function() task.wait() return not stopRequested end })
+  end)
+  imgB:Destroy()
+  if not okM or not out then
+    imgW:Destroy()
+    setStatus('Model render failed: ' .. tostring(okM and info or out), BAD)
+    return
+  end
+  local captureName = target.Name .. (state.opts.variant ~= 'Original' and (' ' .. state.opts.variant) or '')
+  if setSource(imgW, captureName, 'model') then
+    state.origBuf = buffer.create(buffer.len(out))
+    buffer.copy(state.origBuf, 0, out)
+    out = postProcess(out, { step = function() task.wait() return true end })
+    applyResult(out, info.bbox)
+    setStatus('Ready. Rendered the ' .. state.modelView .. ' view with real transparency.', GOOD)
+    state.captureTarget = target
+    return true
+  end
+end
+
+---------------------------------------------------------------- export
+local function uploadResult()
+  if not state.resultBuf then
+    setStatus('Remove a background first.', WARN)
+    return
+  end
+  local L = currentLayout()
+  if L.ew > 1024 or L.eh > 1024 then
+    setStatus('Choose 1024, 512 or 256 under Max export size before uploading. This upload path uses EditableImage, limited to 1024 pixels per side.', WARN)
+    return
+  end
+  setStatus('Preparing the export...', WARN)
+  local buf = Matte.render(state.resultBuf, state.w, state.h, L, { step = function() task.wait() return true end })
+  if not buf then
+    setStatus('Export cancelled while preparing the image.', WARN)
+    return
+  end
+  local img = AssetService:CreateEditableImage({ Size = Vector2.new(L.ew, L.eh) })
+  if not img then
+    setStatus('Export failed: Studio has run out of EditableImage memory. Close other image tools and try again.', BAD)
+    return
+  end
+  img:WritePixelsBuffer(Vector2.zero, Vector2.new(L.ew, L.eh), buf)
+  setStatus('Uploading...', WARN)
+  local base = (string.gsub(state.name, '%.%w+$', ''))
+  local requestParameters = {
+    Name = base .. ' Icon',
+    Description = 'Created with Take a 3D Icon',
+  }
+  local ok, a, b = pcall(function()
+    return AssetService:CreateAssetAsync(img, Enum.AssetType.Image, requestParameters)
+  end)
+  img:Destroy()
+  if not ok then
+    setStatus('Upload failed: ' .. tostring(a) .. ' (Install this .rbxmx locally in Studio Plugins.)', BAD)
+    return
+  end
+  local id
+  if typeof(a) == 'EnumItem' then
+    if a ~= Enum.CreateAssetResult.Success then
+      setStatus('Upload failed: ' .. tostring(a) .. (b and (' · ' .. tostring(b)) or ''), BAD)
+      return
+    end
+    id = b
+  elseif typeof(a) == 'number' then
+    id = a
+  elseif typeof(a) == 'table' then
+    id = a.AssetId or a.assetId or a.Id
+  end
+  if not id then
+    setStatus('Upload finished but no asset ID came back: ' .. tostring(a), WARN)
+    return
+  end
+  state.lastAssetId = id
+  local history = plugin:GetSetting('Take3DIconLibrary') or {}
+  if typeof(history) ~= 'table' then history = {} end
+  table.insert(history, 1, { name = base, id = tostring(id), date = os.time() })
+  while #history > 100 do table.remove(history) end
+  pcall(function() plugin:SetSetting('Take3DIconLibrary', history) end)
+  idBox.Text = 'rbxassetid://' .. tostring(id)
+  setStatus('Uploaded. The ID is in the box above (new images can take a moment to pass moderation).', GOOD)
+  return id
+end
+
+local function insertImageLabel()
+  if not state.lastAssetId then
+    setStatus('Upload the image first, then insert it.', WARN)
+    return
+  end
+  local parent = Selection:Get()[1]
+  if not parent or not (parent:IsA('GuiObject') or parent:IsA('LayerCollector')) then
+    parent = StarterGui:FindFirstChildOfClass('ScreenGui')
+    if not parent then
+      parent = new('ScreenGui', { Name = 'RemoveBG' }, StarterGui)
+    end
+  end
+  local L = currentLayout()
+  local scale = math.min(1, 256 / math.max(L.ew, L.eh))
+  local lbl = new('ImageLabel', {
+    Name = 'NoBgImage', BackgroundTransparency = 1, Image = 'rbxassetid://' .. tostring(state.lastAssetId),
+    Size = UDim2.fromOffset(math.max(1, math.floor(L.ew * scale)), math.max(1, math.floor(L.eh * scale))),
+  }, parent)
+  Selection:Set({ lbl })
+  ChangeHistoryService:SetWaypoint('Insert Remove bg image')
+  setStatus('Inserted an ImageLabel into ' .. parent.Name .. '.', GOOD)
+end
+
+---------------------------------------------------------------- controls
+local tabs = new('Frame', { Position = UDim2.new(0, 12, 0.36, 228), Size = UDim2.new(1, -24, 0, 30), BackgroundTransparency = 1 }, root)
+local cameraTab = button(tabs, 'Camera', ACCENT, { Size = UDim2.new(0.5, -3, 1, 0) })
+local effectsTab = button(tabs, 'Effects', PANEL, { Position = UDim2.new(0.5, 3, 0, 0), Size = UDim2.new(0.5, -3, 1, 0) })
+local controls = new('ScrollingFrame', { Position = UDim2.new(0, 0, 0.36, 264), Size = UDim2.new(1, 0, 0.64, -264), BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 6, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y }, root)
+new('UIListLayout', { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }, controls)
+new('UIPadding', { PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 16), PaddingTop = UDim.new(0, 4), PaddingBottom = UDim.new(0, 12) }, controls)
+
+local busy = false
+local function perform(action, ...)
+  if busy then setStatus('Please wait for the current operation to finish.', WARN) return end
+  busy = true
+  stopRequested = false
+  local args = table.pack(...)
+  task.spawn(function()
+    local ok, err = xpcall(function() action(table.unpack(args, 1, args.n)) end, debug.traceback)
+    busy = false
+    if not ok then setStatus('Operation failed: ' .. tostring(err), BAD) end
+  end)
+end
+local function rerun() perform(runRemove) end
+local o = state.opts
+-- Camera controls preview clones locally; source models and the editor camera stay untouched.
+local liveView = new('ViewportFrame', { Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, ZIndex = 5, Visible = false }, holder)
+local liveWorld = Instance.new('WorldModel', liveView)
+local liveCamera = Instance.new('Camera', liveView)
+liveView.CurrentCamera = liveCamera
+liveView.Ambient = rgb(150, 150, 150)
+liveView.LightColor = rgb(255, 255, 255)
+local liveTarget, liveClone
+local function refreshCameraPreview()
+  local selected = Selection:Get()[1]
+  if selected and (selected:IsA('Model') or selected:IsA('BasePart')) and selected ~= liveTarget then
+    local ok, copy = pcall(function() return selected:Clone() end)
+    if not ok or not copy then return end
+    liveWorld:ClearAllChildren()
+    for _, d in ipairs(copy:GetDescendants()) do
+      if d:IsA('BaseScript') then d:Destroy()
+      elseif d:IsA('BasePart') then d.Anchored = true d.CanCollide = false end
+    end
+    copy.Parent = liveWorld
+    liveTarget, liveClone = selected, copy
+  end
+  if not liveClone then return end
+  local cf, size
+  if liveClone:IsA('Model') then cf, size = liveClone:GetBoundingBox() else cf, size = liveClone.CFrame, liveClone.Size end
+  local viewport = liveView.AbsoluteSize
+  if viewport.X < 1 or viewport.Y < 1 then return end
+  local vfov = math.rad(o.fov)
+  local hfov = 2 * math.atan(math.tan(vfov / 2) * viewport.X / math.max(viewport.Y, 1))
+  local distance = math.max(size.Magnitude / 2, 0.5) / math.sin(math.min(vfov, hfov) / 2) * 1.08 * 100 / o.zoom
+  local direction = (VIEW_DIRS[state.modelView] or VIEW_DIRS['3/4']).Unit
+  if state.modelView == 'Custom' then
+    local yaw, pitch = math.rad(o.yaw), math.rad(o.pitch)
+    direction = Vector3.new(math.sin(yaw) * math.cos(pitch), math.sin(pitch), -math.cos(yaw) * math.cos(pitch))
+  end
+  liveCamera.FieldOfView = o.fov
+  liveCamera.CFrame = CFrame.lookAt(cf.Position + direction * distance, cf.Position)
+    * CFrame.new(size.Magnitude * o.panX / 100, size.Magnitude * o.panY / 100, 0)
+    * CFrame.Angles(0, 0, math.rad(o.roll))
+  preview.Visible = false
+  liveView.Visible = true
+  emptyLabel.Visible = false
+end
+Selection.SelectionChanged:Connect(refreshCameraPreview)
+liveView.Active = true
+liveView.InputChanged:Connect(function(input)
+  if input.UserInputType ~= Enum.UserInputType.MouseWheel or busy then return end
+  o.zoom = math.clamp(o.zoom + input.Position.Z * 5, 50, 180)
+  local setZoom = controlSetters['Camera zoom (%)']
+  if setZoom then setZoom(o.zoom) end
+  refreshCameraPreview()
+end)
+liveView:GetPropertyChangedSignal('AbsoluteSize'):Connect(function()
+  if liveView.Visible then refreshCameraPreview() end
+end)
+-- Once a rendered image arrives, show the actual processed result instead.
+preview:GetPropertyChangedSignal('ImageContent'):Connect(function()
+  liveView.Visible = false
+  preview.Visible = true
+end)
+plugin.Unloading:Connect(function() liveWorld:ClearAllChildren() end)
+makeSlider(controls, 1, 'Tolerance', 0, 100, o.tolerance, function(v) o.tolerance = v rerun() end)
+makeSlider(controls, 2, 'Edge softness (px)', 0, 6, o.softness, function(v) o.softness = v rerun() end)
+makeSlider(controls, 3, 'Edge shift (px, minus = shrink)', -4, 4, o.edgeShift, function(v) o.edgeShift = v rerun() end)
+makeSlider(controls, 4, 'Brightness (%)', 50, 200, o.brightness, function(v) o.brightness = v rerun() end)
+makeSlider(controls, 33, 'Model render FOV', 15, 120, o.fov, function(v) o.fov = v refreshCameraPreview() end)
+makeToggle(controls, 6, 'Clean edge colours', o.defringe, function(v) o.defringe = v rerun() end)
+makeToggle(controls, 7, 'Keep main subject only', o.keepLargest, function(v) o.keepLargest = v rerun() end)
+makeToggle(controls, 8, 'Also remove enclosed background holes', o.removeHoles, function(v) o.removeHoles = v rerun() end)
+makeToggle(controls, 9, 'Auto-crop to the subject on export', o.autoCrop, function(v) o.autoCrop = v refreshInfo() end)
+makeToggle(controls, 9, 'Preserve imported alpha (recommended)', o.preserveAlpha ~= false, function(v) o.preserveAlpha = v rerun() end)
+
+label(controls, 'Stroke / outline', 12, DIM, { Size = UDim2.new(1, 0, 0, 16), LayoutOrder = 10 })
+local strokeRow = new('Frame', { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 26), LayoutOrder = 11 }, controls)
+makeToggle(strokeRow, 1, 'Enabled', o.strokeOn, function(v) o.strokeOn = v rerun() end)
+local strokeSliderRow = new('Frame', { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 40), LayoutOrder = 12 }, controls)
+makeSlider(strokeSliderRow, 1, 'Stroke width (px)', 1, 20, o.strokeWidth, function(v) o.strokeWidth = v if o.strokeOn then rerun() end end)
+local strokeColorRow = new('Frame', { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 28), LayoutOrder = 13 }, controls)
+label(strokeColorRow, 'Stroke colour', 13, TEXT, { Size = UDim2.new(1, -140, 1, 0) })
+local strokeSwatches = { { 255, 255, 255 }, { 0, 0, 0 }, { 255, 215, 0 }, { 240, 98, 98 }, { 88, 166, 255 } }
+for i, c in ipairs(strokeSwatches) do
+  local sw = new('TextButton', { Text = '', Size = UDim2.fromOffset(22, 22), Position = UDim2.new(1, -24 * (6 - i), 0, 3), BackgroundColor3 = rgb(c[1], c[2], c[3]) }, strokeColorRow)
+  corner(sw, 11)
+  stroke(sw, BORDER)
+  sw.MouseButton1Click:Connect(function()
+    o.strokeColor = c
+    if o.strokeOn then rerun() end
+  end)
+end
+
+updateSwatch = function() end
+
+label(controls, 'Max export size', 12, DIM, { Size = UDim2.new(1, 0, 0, 16), LayoutOrder = 16 })
+local sizeSeg = makeSegmented(controls, { { 'Original', 0 }, { '2048', 2048 }, { '1024', 1024 }, { '512', 512 }, { '256', 256 } }, 0, function(v)
+  o.maxSide = v > 0 and v or nil
+  refreshInfo()
+end, { Size = UDim2.new(1, 0, 0, 26), LayoutOrder = 17 })
+
+local actionRow1 = new('Frame', { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 34), LayoutOrder = 18 }, controls)
+local removeBtn = button(actionRow1, 'Remove background', ACCENT, { Size = UDim2.new(0.62, -4, 1, 0), TextSize = 14 })
+local resetBtn = button(actionRow1, 'Reset', PANEL, { Position = UDim2.new(0.62, 2, 0, 0), Size = UDim2.new(0.38, -2, 1, 0), TextSize = 14 })
+stroke(resetBtn, BORDER)
+local actionRow2 = new('Frame', { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 34), LayoutOrder = 0 }, controls)
+local uploadBtn = button(actionRow2, 'Upload to Roblox', rgb(52, 140, 84), { Position = UDim2.new(0.5, 3, 0, 0), Size = UDim2.new(0.5, -3, 1, 0), TextSize = 13 })
+local optionControls = {
+  tolerance = 'Tolerance', softness = 'Edge softness (px)', edgeShift = 'Edge shift (px, minus = shrink)',
+  brightness = 'Brightness (%)', fov = 'Model render FOV', defringe = 'Clean edge colours',
+  keepLargest = 'Keep main subject only', removeHoles = 'Also remove enclosed background holes',
+  autoCrop = 'Auto-crop to the subject on export', strokeOn = 'Enabled', strokeWidth = 'Stroke width (px)',
+}
+label(controls, 'Recent uploads · select an ID to copy', 12, DIM, { Size = UDim2.new(1, 0, 0, 20), LayoutOrder = 21 })
+local library = new('TextBox', { Text = '', ClearTextOnFocus = false, MultiLine = true, TextEditable = false, TextWrapped = true, Font = Enum.Font.Code, TextSize = 12, TextColor3 = TEXT, BackgroundColor3 = PANEL, Size = UDim2.new(1, 0, 0, 100), LayoutOrder = 22, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top }, controls)
+local librarySearch = new('TextBox', { Text = '', PlaceholderText = 'Search uploads by name or asset ID', ClearTextOnFocus = false, Font = Enum.Font.Gotham, TextSize = 13, TextColor3 = TEXT, BackgroundColor3 = PANEL, Size = UDim2.new(1, 0, 0, 28), LayoutOrder = 21 }, controls)
+local function refreshLibrary()
+  local history = plugin:GetSetting('Take3DIconLibrary') or {}
+  local lines = {}
+  if typeof(history) == 'table' then
+    for i, entry in ipairs(history) do
+      local line = tostring(entry.name) .. ': rbxassetid://' .. tostring(entry.id)
+      if string.find(string.lower(line), string.lower(librarySearch.Text), 1, true) then
+        lines[#lines + 1] = line
+      end
+      if #lines >= 8 then break end
+    end
+  end
+  library.Text = #lines > 0 and table.concat(lines, '\n') or 'No matching uploads.'
+end
+librarySearch:GetPropertyChangedSignal('Text'):Connect(refreshLibrary)
+refreshLibrary()
+
+label(controls, 'Art direction & posing', 14, TEXT, { Size = UDim2.new(1, 0, 0, 24), LayoutOrder = 24 })
+local styles = { 'Clean', 'Cel shade', 'Sketch', 'Pixel art', 'Silhouette', 'Halftone', 'Duotone' }
+local styleBtn = button(controls, 'Style: ' .. o.style, PANEL, { Size = UDim2.new(1, 0, 0, 30), LayoutOrder = 25 })
+styleBtn.MouseButton1Click:Connect(function()
+  if busy then return end
+  o.style = styles[(table.find(styles, o.style) or 1) % #styles + 1]
+  styleBtn.Text = 'Style: ' .. o.style
+  if state.origBuf then rerun() end
+end)
+makeToggle(controls, 26, 'Soft blue glow', o.glow, function(v) o.glow = v rerun() end)
+makeToggle(controls, 27, 'Drop shadow', o.shadow, function(v) o.shadow = v rerun() end)
+makeSlider(controls, 28, 'Glow / shadow radius', 1, 20, o.auraRadius, function(v) o.auraRadius = v rerun() end)
+makeSlider(controls, 29, 'Camera yaw', -180, 180, o.yaw, function(v) o.yaw = v state.modelView = 'Custom' viewBtn.Text = 'View: Custom' refreshCameraPreview() end)
+makeSlider(controls, 30, 'Camera pitch', -80, 80, o.pitch, function(v) o.pitch = v state.modelView = 'Custom' viewBtn.Text = 'View: Custom' refreshCameraPreview() end)
+makeSlider(controls, 31, 'Camera roll', -180, 180, o.roll, function(v) o.roll = v refreshCameraPreview() end)
+makeSlider(controls, 32, 'Camera zoom (%)', 50, 180, o.zoom, function(v) o.zoom = v refreshCameraPreview() end)
+local function setTab(tabName)
+  cameraTab.BackgroundColor3 = tabName == 'Camera' and ACCENT or PANEL
+  effectsTab.BackgroundColor3 = tabName == 'Effects' and ACCENT or PANEL
+  for _, child in ipairs(controls:GetChildren()) do
+    if child:IsA('GuiObject') then
+      local isCameraControl = (child.LayoutOrder >= 29 and child.LayoutOrder <= 33) or child.LayoutOrder == 60 or child.LayoutOrder == 61
+      local isAction = child.LayoutOrder == 0 or (child.LayoutOrder >= 36 and child.LayoutOrder <= 38)
+      child.Visible = (tabName == 'Camera' and (isCameraControl or isAction)) or (tabName == 'Effects' and not isCameraControl)
+    end
+  end
+end
+cameraTab.MouseButton1Click:Connect(function() setTab('Camera') end)
+effectsTab.MouseButton1Click:Connect(function() setTab('Effects') end)
+setTab('Camera')
+optionControls.glow, optionControls.shadow = 'Soft blue glow', 'Drop shadow'
+optionControls.auraRadius, optionControls.yaw, optionControls.pitch = 'Glow / shadow radius', 'Camera yaw', 'Camera pitch'
+optionControls.roll, optionControls.zoom = 'Camera roll', 'Camera zoom (%)'
+controlSetters['Style'] = function(v) styleBtn.Text = 'Style: ' .. v end
+optionControls.style = 'Style'
+
+-- Reviewable, memory-bounded batch.
+local batch = { items = {}, index = 0 }
+local workflow = { plan = nil }
+local variants = { 'Original', 'Red', 'Blue', 'Gold' }
+local batchText = label(controls, 'Set camera and effects first, then render one selected model.', 12, DIM, { Size = UDim2.new(1, 0, 0, 36), TextWrapped = true, LayoutOrder = 36 })
+local startBatch = button(actionRow2, 'Render selected icon', ACCENT, { Size = UDim2.new(0.5, -3, 1, 0) })
+local function snapshot(target)
+  return { target = target, name = state.name, w = state.w, h = state.h, source = state.origBuf,
+    result = state.resultBuf, bbox = state.bbox, kind = state.kind, approved = true, view = state.modelView, opts = HttpService:JSONDecode(HttpService:JSONEncode(o)) }
+end
+local function showBatch(index, restoreOptions)
+  local entry = batch.items[index]
+  if not entry then return end
+  local img = AssetService:CreateEditableImage({ Size = Vector2.new(entry.w, entry.h) })
+  if not img then error('Not enough image memory to review this icon') end
+  img:WritePixelsBuffer(Vector2.zero, img.Size, entry.source)
+  if not setSource(img, entry.name, entry.kind) then img:Destroy() return end
+  state.origBuf = entry.source
+  applyResult(entry.result, entry.bbox)
+  if restoreOptions ~= false then
+    o.maxSide = entry.opts.maxSide
+    for key, value in pairs(entry.opts) do
+      o[key] = value
+      local setter = controlSetters[optionControls[key]]
+      if setter then setter(value) end
+    end
+    state.modelView = entry.view or '3/4'
+    viewBtn.Text = 'View: ' .. state.modelView
+    sizeSeg.set(o.maxSide or 0)
+  end
+  batch.index = index
+  batchText.Text = string.format('%d/%d · %s · %s', index, #batch.items, entry.name, entry.approved and 'KEEP' or 'SKIP')
+end
+startBatch.MouseButton1Click:Connect(function()
+  perform(renderModel)
+end)
+
+-- Retired workflow recipe and lighting controls; batches use the selection.
+--[=[
+label(controls, 'Workflow recipe: Variant@Preset@requiredBooleanAttribute', 12, DIM, { Size = UDim2.new(1, 0, 0, 32), TextWrapped = true, LayoutOrder = 55 })
+local recipeBox = new('TextBox', { Text = 'Original;Gold', PlaceholderText = 'Original@Default;Gold@Golden@GoldenAllowed', ClearTextOnFocus = false, Font = Enum.Font.Code, TextSize = 12, TextColor3 = TEXT, BackgroundColor3 = PANEL, Size = UDim2.new(1, 0, 0, 28), LayoutOrder = 56 }, controls)
+local planButton = button(controls, 'Plan workflow on selected models (no capture)', PANEL, { Size = UDim2.new(1, 0, 0, 30), LayoutOrder = 57 })
+local clearPlan = button(controls, 'Clear workflow plan · use normal selection batch', PANEL, { Size = UDim2.new(1, 0, 0, 30), LayoutOrder = 58 })
+planButton.MouseButton1Click:Connect(function()
+  if busy then return end
+  local ok, err = pcall(function()
+    local plan, lines = {}, {}
+    local presets = plugin:GetSetting('Take3DIconPresets') or {}
+    for _, target in ipairs(selectedModels()) do
+      for _, stepText in ipairs(string.split(recipeBox.Text, ';')) do
+        local fields = string.split(stepText, '@')
+        local variant = string.match(fields[1], '^%s*(.-)%s*$')
+        if not table.find(variants, variant) then error('Unknown variant: ' .. variant) end
+        local preset = fields[2] and fields[2] ~= '' and presets[fields[2]] or nil
+        if fields[2] and fields[2] ~= '' and not preset then error('Preset not found: ' .. fields[2]) end
+        local required = fields[3]
+        if not required or required == '' or target:GetAttribute(required) == true then
+          local opts = HttpService:JSONDecode(HttpService:JSONEncode(o))
+          if preset then
+            opts.maxSide = preset.opts.maxSide
+            for key, value in pairs(preset.opts) do opts[key] = value end
+          end
+          opts.variant = variant
+          plan[#plan + 1] = { target = target, opts = opts, view = preset and preset.view or state.modelView }
+          lines[#lines + 1] = target.Name .. ' / ' .. variant
+        end
+      end
+    end
+    if #plan == 0 then error('No matching models or workflow steps.') end
+    if #plan > 24 then error('Plan exceeds the 24-icon memory limit.') end
+    workflow.plan = plan
+    batchText.Text = 'PLAN ' .. #plan .. ' icons: ' .. table.concat(lines, ', ')
+    setStatus('Plan prepared without changing source models. Capture selected batch will run this plan.', GOOD)
+  end)
+  if not ok then setStatus(tostring(err), BAD) end
+end)
+clearPlan.MouseButton1Click:Connect(function() if not busy then workflow.plan = nil batchText.Text = 'Workflow cleared. Next batch uses the current selection.' end end)
+local lightOptions = { 'Scene', 'Bright studio', 'Dramatic', 'Flat' }
+local lightButton = button(controls, 'Lighting: Scene', PANEL, { Size = UDim2.new(1, 0, 0, 30), LayoutOrder = 59 })
+lightButton.MouseButton1Click:Connect(function()
+  if busy then return end
+  o.lightPreset = lightOptions[(table.find(lightOptions, o.lightPreset) or 1) % #lightOptions + 1]
+  lightButton.Text = 'Lighting: ' .. o.lightPreset
+end)
+controlSetters['Lighting'] = function(v) lightButton.Text = 'Lighting: ' .. v end
+optionControls.lightPreset = 'Lighting'
+]=]
+makeSlider(controls, 60, 'Camera pan X (%)', -40, 40, o.panX, function(v) o.panX = v refreshCameraPreview() end)
+makeSlider(controls, 61, 'Camera pan Y (%)', -40, 40, o.panY, function(v) o.panY = v refreshCameraPreview() end)
+optionControls.panX, optionControls.panY = 'Camera pan X (%)', 'Camera pan Y (%)'
+
+-- Companion export and AI bridge retired from the plugin interface.
+--[=[
+label(controls, 'Local PNG & Open Cloud companion', 14, TEXT, { Size = UDim2.new(1, 0, 0, 24), LayoutOrder = 44 })
+label(controls, 'Start server.mjs with Node.js 18+. Paste its token here, never your Roblox API key.', 12, DIM, { Size = UDim2.new(1, 0, 0, 38), TextWrapped = true, LayoutOrder = 45 })
+local tokenBox = new('TextBox', { Text = '', PlaceholderText = 'Companion token (session only)', ClearTextOnFocus = false, Font = Enum.Font.Code, TextSize = 12, TextColor3 = TEXT, BackgroundColor3 = PANEL, Size = UDim2.new(1, 0, 0, 28), LayoutOrder = 46 }, controls)
+local projectBox = new('TextBox', { Text = 'MyProject', PlaceholderText = 'PNG project folder', ClearTextOnFocus = false, Font = Enum.Font.Gotham, TextSize = 12, TextColor3 = TEXT, BackgroundColor3 = PANEL, Size = UDim2.new(1, 0, 0, 28), LayoutOrder = 47 }, controls)
+local outputBox = new('TextBox', { Text = '0', PlaceholderText = 'Output max side: 0 = native; 16–4096 (upscaled above native)', ClearTextOnFocus = false, Font = Enum.Font.Gotham, TextSize = 12, TextColor3 = TEXT, BackgroundColor3 = PANEL, Size = UDim2.new(1, 0, 0, 28), LayoutOrder = 48 }, controls)
+local savePNG = button(controls, 'Save PNG via companion', ACCENT, { Size = UDim2.new(1, 0, 0, 30), LayoutOrder = 49 })
+local cloudUpload = button(controls, 'Upload via companion (configured user / group)', rgb(52, 140, 84), { Size = UDim2.new(1, 0, 0, 30), LayoutOrder = 50 })
+local function companionRequest(endpoint, body)
+  if tokenBox.Text == '' then error('Start the companion and enter its printed token first.') end
+  local response = HttpService:RequestAsync({
+    Url = 'http://127.0.0.1:19765/' .. endpoint, Method = 'POST',
+    Headers = { ['Content-Type'] = 'application/json', ['X-Icon-Token'] = tokenBox.Text },
+    Body = HttpService:JSONEncode(body),
+  })
+  local decoded = HttpService:JSONDecode(response.Body)
+  if not response.Success then error('Companion HTTP ' .. response.StatusCode .. ': ' .. tostring(decoded.error or response.Body)) end
+  return decoded
+end
+local function companionExport(mode)
+  if not state.resultBuf then error('Capture or process an icon first.') end
+  local maxSide = tonumber(outputBox.Text)
+  if not maxSide or maxSide ~= math.floor(maxSide) or (maxSide ~= 0 and (maxSide < 16 or maxSide > 4096)) then error('Output size must be 0 or an integer from 16 to 4096.') end
+  local layout = currentLayout()
+  if layout.ew > 1024 or layout.eh > 1024 then error('Set Max export size to 1024 or smaller. The companion can resize that result afterwards.') end
+  local pixels = Matte.render(state.resultBuf, state.w, state.h, layout, { step = function() task.wait() return not stopRequested end })
+  if not pixels or stopRequested then return end
+  local started = companionRequest('begin', { name = state.name, project = projectBox.Text, width = layout.ew, height = layout.eh, maxSide = maxSide, mode = mode })
+  local session, chunkIndex = started.session, 0
+  local ok, err = pcall(function()
+    local bytes = buffer.tostring(pixels)
+    for offset = 1, #bytes, 65536 do
+      if stopRequested then error('Export cancelled before upload submission.') end
+      local hex = string.gsub(string.sub(bytes, offset, offset + 65535), '.', function(c) return string.format('%02x', string.byte(c)) end)
+      companionRequest('chunk', { session = session, index = chunkIndex, hex = hex })
+      chunkIndex += 1
+      setStatus(string.format('Sending PNG pixels: %d%%', math.min(100, math.floor((offset + 65535) / #bytes * 100))), WARN)
+      task.wait()
+    end
+    companionRequest('finish', { session = session })
+    local deadline = os.clock() + 240
+    while os.clock() < deadline do
+      if stopRequested then error('Stopped waiting. An already submitted upload may still complete; check Creator Hub before retrying.') end
+      local status = companionRequest('status', { session = session })
+      if status.status == 'error' then error(status.error) end
+      if status.status == 'done' then
+        local result = status.result
+        if result.decalId then
+          local okAsset, decal = pcall(function() return InsertService:LoadAsset(tonumber(result.decalId)) end)
+          local imageId
+          if okAsset and decal then
+            for _, d in ipairs(decal:GetDescendants()) do if d:IsA('Decal') then imageId = string.match(d.Texture, '%d+') break end end
+            decal:Destroy()
+          end
+          if imageId then
+            state.lastAssetId = tonumber(imageId)
+            idBox.Text = 'rbxassetid://' .. imageId
+            local history = plugin:GetSetting('Take3DIconLibrary') or {}
+            table.insert(history, 1, { name = state.name, id = imageId, date = os.time() })
+            while #history > 100 do table.remove(history) end
+            plugin:SetSetting('Take3DIconLibrary', history)
+            refreshLibrary()
+            setStatus('Uploaded image ' .. imageId .. '. PNG: ' .. result.file, GOOD)
+          else
+            idBox.Text = 'Decal ID: ' .. result.decalId
+            setStatus('Created Decal ' .. result.decalId .. ', but its image ID could not yet be resolved. Check moderation/permissions. PNG: ' .. result.file, WARN)
+          end
+        else
+          setStatus(string.format('PNG saved: %s (%d×%d).', result.file, result.width, result.height), GOOD)
+        end
+        return result
+      end
+      setStatus(mode == 'upload' and 'Companion uploading; waiting for Roblox operation...' or 'Companion writing PNG...', WARN)
+      task.wait(1)
+    end
+    error('Companion timed out. Check Creator Hub before retrying an upload.')
+  end)
+  if not ok then
+    pcall(function() companionRequest('cancel', { session = session }) end)
+    error(err)
+  end
+end
+savePNG.MouseButton1Click:Connect(function() perform(companionExport, 'save') end)
+cloudUpload.MouseButton1Click:Connect(function() perform(companionExport, 'upload') end)
+local saveBatchPNG = button(controls, 'Save approved batch PNGs via companion', PANEL, { Size = UDim2.new(1, 0, 0, 30), LayoutOrder = 51 })
+saveBatchPNG.MouseButton1Click:Connect(function()
+  perform(function()
+    local count = 0
+    for index, entry in ipairs(batch.items) do
+      if stopRequested then break end
+      if entry.approved then showBatch(index) companionExport('save') count += 1 end
+    end
+    setStatus('Saved ' .. count .. ' approved batch PNGs via companion.', GOOD)
+  end)
+end)
+
+-- Agent commands are a small, explicit allowlist, never arbitrary Lua execution.
+local agent = { mode = 'Block', pending = nil, alive = true }
+local agentMode = button(controls, 'Agent permission: Block', PANEL, { Size = UDim2.new(1, 0, 0, 30), LayoutOrder = 52 })
+local agentStatus = label(controls, 'AI bridge disabled. Uploads always require approval.', 12, DIM, { Size = UDim2.new(1, 0, 0, 36), TextWrapped = true, LayoutOrder = 53 })
+local agentRow = new('Frame', { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 30), LayoutOrder = 54 }, controls)
+local agentApprove = button(agentRow, 'Approve request', ACCENT, { Size = UDim2.new(0.5, -3, 1, 0) })
+local agentReject = button(agentRow, 'Reject request', BAD, { Position = UDim2.new(0.5, 3, 0, 0), Size = UDim2.new(0.5, -3, 1, 0) })
+plugin.Unloading:Connect(function() agent.alive = false stopRequested = true end)
+local function answerAgent(job, result, err)
+  pcall(function() companionRequest('agent/result', { job = job.id, result = result, error = err }) end)
+end
+local function resolveModel(path)
+  if typeof(path) ~= 'string' then error('Agent capture needs a model path.') end
+  local object = game
+  for segment in string.gmatch(path, '[^%.]+') do
+    if segment ~= 'game' then
+      object = object:FindFirstChild(segment)
+      if not object then error('Model path not found: ' .. path) end
+    end
+  end
+  if not (object:IsA('Model') or object:IsA('BasePart')) then error('Only Model and BasePart capture targets are permitted.') end
+  if not (object:IsDescendantOf(workspace) or object:IsDescendantOf(game:GetService('ReplicatedStorage')) or object:IsDescendantOf(game:GetService('ServerStorage'))) then error('Capture target must be in Workspace, ReplicatedStorage or ServerStorage.') end
+  return object
+end
+local function runAgent(job)
+  if busy then agent.pending = job return end
+  agent.pending = nil
+  perform(function()
+    local ok, result = pcall(function()
+      if job.action == 'capture' then
+        if not renderModel(resolveModel(job.args.path)) then error(statusLabel.Text) end
+        return { name = state.name, width = state.w, height = state.h }
+      elseif job.action == 'save' then return companionExport('save')
+      elseif job.action == 'upload' then return companionExport('upload')
+      elseif job.action == 'library' then return plugin:GetSetting('Take3DIconLibrary') or {}
+      elseif job.action == 'preset' then
+        local presets = plugin:GetSetting('Take3DIconPresets') or {}
+        local saved = presets[job.args.name]
+        if not saved then error('Named preset not found.') end
+        o.maxSide = saved.opts.maxSide
+        for key, value in pairs(saved.opts) do
+          o[key] = value
+          local setter = controlSetters[optionControls[key]]
+          if setter then setter(value) end
+        end
+        state.modelView = saved.view
+        viewBtn.Text = 'View: ' .. state.modelView
+        sizeSeg.set(o.maxSide or 0)
+        return { preset = job.args.name }
+      else error('Unsupported agent action') end
+    end)
+    answerAgent(job, ok and result or nil, not ok and tostring(result) or nil)
+    agentStatus.Text = ok and ('Completed: ' .. job.action) or ('Agent error: ' .. tostring(result))
+  end)
+end
+agentMode.MouseButton1Click:Connect(function()
+  local modes = { 'Block', 'Ask', 'Allow' }
+  agent.mode = modes[(table.find(modes, agent.mode) or 1) % #modes + 1]
+  agentMode.Text = 'Agent permission: ' .. agent.mode
+  if agent.mode == 'Block' then
+    stopRequested = true
+    if agent.pending then answerAgent(agent.pending, nil, 'Blocked by user') agent.pending = nil end
+  end
+end)
+agentApprove.MouseButton1Click:Connect(function()
+  if agent.mode ~= 'Block' and agent.pending then runAgent(agent.pending) end
+end)
+agentReject.MouseButton1Click:Connect(function()
+  if agent.pending then answerAgent(agent.pending, nil, 'Rejected by user') agent.pending = nil agentStatus.Text = 'Request rejected.' end
+end)
+task.spawn(function()
+  while agent.alive do
+    task.wait(2)
+    if agent.mode ~= 'Block' and tokenBox.Text ~= '' then
+      local ok, result = pcall(function() return companionRequest('agent/poll', { onlyStop = agent.pending ~= nil }) end)
+      if ok and result.job then
+        local job = result.job
+        if job.action == 'stop' then
+          stopRequested = true answerAgent(job, { stopRequested = true })
+        elseif agent.mode == 'Allow' and job.action ~= 'upload' and not busy then runAgent(job)
+        else agent.pending = job agentStatus.Text = 'Pending ' .. job.action .. ': ' .. HttpService:JSONEncode(job.args) end
+      elseif not ok then agentStatus.Text = 'Companion connection failed. Check token and HTTP permission.' end
+    end
+  end
+end)
+
+]=]
+
+local previewRow = new('Frame', { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 32), LayoutOrder = 23 }, controls)
+local previewUI = button(previewRow, 'Preview in selected UI', ACCENT, { Size = UDim2.new(0.65, -3, 1, 0) })
+local restoreUI = button(previewRow, 'Restore UI', PANEL, { Position = UDim2.new(0.65, 3, 0, 0), Size = UDim2.new(0.35, -3, 1, 0) })
+restoreUI.MouseButton1Click:Connect(function() restoreUIPreview() setStatus('Original UI images restored.', GOOD) end)
+previewUI.MouseButton1Click:Connect(function()
+  perform(function()
+    if not state.resultBuf then setStatus('Capture an icon first.', WARN) return end
+    local targets = {}
+    for _, selected in ipairs(Selection:Get()) do
+      if selected:IsA('ImageLabel') or selected:IsA('ImageButton') then targets[#targets + 1] = selected end
+    end
+    if #targets == 0 then setStatus('Select one or more ImageLabels or ImageButtons in Explorer.', WARN) return end
+    restoreUIPreview()
+    local layout = currentLayout()
+    if layout.ew > 1024 or layout.eh > 1024 then setStatus('Choose an export size of 1024 or smaller for UI preview.', WARN) return end
+    local pixels = Matte.render(state.resultBuf, state.w, state.h, layout, { step = function() task.wait() return true end })
+    if not pixels then return end
+    if not widget.Enabled then return end
+    local ok, err = pcall(function()
+      uiPreview.image = AssetService:CreateEditableImage({ Size = Vector2.new(layout.ew, layout.eh) })
+      if not uiPreview.image then error('Not enough EditableImage memory') end
+      uiPreview.image:WritePixelsBuffer(Vector2.zero, uiPreview.image.Size, pixels)
+      for _, target in ipairs(targets) do
+        uiPreview.entries[#uiPreview.entries + 1] = { target = target, content = target.ImageContent }
+        target.ImageContent = Content.fromObject(uiPreview.image)
+      end
+    end)
+    if not ok then restoreUIPreview() setStatus('UI preview failed: ' .. tostring(err), BAD) return end
+    setStatus('Previewing ' .. #targets .. ' UI images. Restore UI or close the plugin to undo.', GOOD)
+  end)
+end)
+
+---------------------------------------------------------------- wiring
+importBtn.MouseButton1Click:Connect(function() perform(importFile) end)
+modelBtn.MouseButton1Click:Connect(function() perform(renderModel) end)
+viewBtn.MouseButton1Click:Connect(function()
+  local idx = table.find(VIEW_ORDER, state.modelView) or 1
+  state.modelView = VIEW_ORDER[idx % #VIEW_ORDER + 1]
+  viewBtn.Text = 'View: ' .. state.modelView
+end)
+copyIdBtn.MouseButton1Click:Connect(function()
+  local id = state.lastAssetId and tostring(state.lastAssetId) or string.match(idBox.Text, '%d+')
+  if not id then setStatus('Upload an icon or enter an image ID first.', WARN) return end
+  idBox.Text = id
+  idBox:CaptureFocus()
+  idBox.CursorPosition = #id + 1
+  idBox.SelectionStart = 1
+  setStatus('ID selected. Press Ctrl+C (Windows) or Cmd+C (Mac) to copy.', GOOD)
+end)
+idBox.FocusLost:Connect(function(enterPressed)
+  if enterPressed then perform(loadById, idBox.Text) end
+end)
+removeBtn.MouseButton1Click:Connect(rerun)
+resetBtn.MouseButton1Click:Connect(function()
+  if busy then return end
+  restoreUIPreview()
+  state.token += 1
+  if state.resultImg then state.resultImg:Destroy() end
+  state.lastAssetId = nil
+  state.resultImg, state.resultBuf, state.bbox = nil, nil, nil
+  state.bgColor, state.pickMode = nil, false
+  updateSwatch()
+  setView('Original')
+  setStatus('Back to the original image.', DIM)
+end)
+uploadBtn.MouseButton1Click:Connect(function() perform(function() uploadResult() refreshLibrary() end) end)
+
+preview.InputBegan:Connect(function(input)
+  if not state.pickMode or input.UserInputType ~= Enum.UserInputType.MouseButton1 or not state.origBuf then return end
+  local rel = Vector2.new(input.Position.X, input.Position.Y) - preview.AbsolutePosition
+  local size = preview.AbsoluteSize
+  local px = math.clamp(math.floor(rel.X / math.max(size.X, 1) * state.w), 0, state.w - 1)
+  local py = math.clamp(math.floor(rel.Y / math.max(size.Y, 1) * state.h), 0, state.h - 1)
+  local i = (py * state.w + px) * 4
+  state.bgColor = { readu8(state.origBuf, i), readu8(state.origBuf, i + 1), readu8(state.origBuf, i + 2), readu8(state.origBuf, i + 3) }
+  state.pickMode = false
+  updateSwatch()
+  rerun()
+end)
+
+makeChecker()
+setBackdrop('Checker')
+updateSwatch()
+refreshInfo()
+setStatus('Ready.', GOOD)
+setTab('Camera')
+
+]]></ProtectedString>
+			<bool name="Disabled">false</bool>
+			<Content name="LinkedSource"><null></null></Content>
+			<token name="RunContext">3</token>
+			<string name="ScriptGuid">{CEBDE025-DA91-4EF4-B5E0-F34B7F306E1E}</string>
+			<BinaryString name="AttributesSerialize"></BinaryString>
+			<SecurityCapabilities name="Capabilities">0</SecurityCapabilities>
+			<bool name="DefinesCapabilities">false</bool>
+			<string name="Name">Take3DIcon</string>
+			<BinaryString name="SerializedOverrides"></BinaryString>
+			<int64 name="SourceAssetId">-1</int64>
+			<SharedString name="Tags">yuZpQdnvvUBOTYh1jqZ2cA==</SharedString>
+		</Properties>
+		<Item class="ModuleScript" referent="RBX5C1F4BB22350484696A6758F6063A69F">
+			<Properties>
+				<Content name="LinkedSource"><null></null></Content>
+				<ProtectedString name="Source"><![CDATA[--!nocheck
+-- Matte: background removal on raw RGBA byte buffers (4 bytes per pixel, row-major).
+-- Pure Luau, no Roblox instances, so it can be tested on its own.
+
+local Matte = {}
+
+local readu8, writeu8 = buffer.readu8, buffer.writeu8
+local readu32, writeu32 = buffer.readu32, buffer.writeu32
+
+Matte.defaults = {
+	tolerance = 30,     -- 0..100  how far a colour may be from the background colour
+	softness = 2,       -- 0..6    edge feather in px (0 = hard cut)
+	edgeShift = 0,      -- -4..4   negative shrinks the subject, positive grows it
+	defringe = true,    -- remove background colour bleeding into edge pixels
+	keepLargest = true, -- drop stray specks that are not part of the main subject
+	removeHoles = false,-- also remove background pockets enclosed by the subject
+	protectBright = true,-- preserve bright subject details touching a bright background
+	bgColor = nil,      -- {r,g,b} 0..255, or nil to auto-detect from the image border
+}
+
+local function checkpoint(hooks, frac, label)
+	if hooks and hooks.step then
+		return hooks.step(frac, label) ~= false
+	end
+	return true
+end
+
+-- Background palette: most common colours along the image border.
+local function buildPalette(src, w, h, bgColor)
+	if bgColor then
+		return { { bgColor[1], bgColor[2], bgColor[3], bgColor[4] or 255 } }
+	end
+	local bins, total = {}, 0
+	local ring = math.clamp(math.floor(math.min(w, h) / 50), 1, 3)
+	local function sample(x, y)
+		local i = (y * w + x) * 4
+		local a = readu8(src, i + 3)
+		if a < 16 then return end
+		local r, g, b = readu8(src, i), readu8(src, i + 1), readu8(src, i + 2)
+		local key = ((r // 16) * 256 + (g // 16) * 16 + (b // 16)) * 8 + (a // 32)
+		local bin = bins[key]
+		if not bin then
+			bin = { 0, 0, 0, 0, 0 }
+			bins[key] = bin
+		end
+		bin[1] += r
+		bin[2] += g
+		bin[3] += b
+		bin[4] += 1
+		bin[5] += a
+		total += 1
+	end
+	for y = 0, h - 1 do
+		if y < ring or y >= h - ring then
+			for x = 0, w - 1 do sample(x, y) end
+		else
+			for k = 0, ring - 1 do
+				sample(k, y)
+				sample(w - 1 - k, y)
+			end
+		end
+	end
+	local list = {}
+	for _, bin in pairs(bins) do
+		if bin[4] >= math.max(3, total * 0.04) then list[#list + 1] = bin end
+	end
+	table.sort(list, function(a, b) return a[4] > b[4] end)
+	local palette = {}
+	for i = 1, math.min(6, #list) do
+		local bin = list[i]
+		palette[i] = { bin[1] / bin[4], bin[2] / bin[4], bin[3] / bin[4], bin[5] / bin[4] }
+	end
+	return palette
+end
+
+-- Grow every pixel whose mask value is `fromVal` into its 4-neighbours for `layers` steps.
+local function spread(m, w, h, fromVal, layers)
+	local N = w * h
+	local cur = {}
+	for idx = 0, N - 1 do
+		if readu8(m, idx) == fromVal then
+			local x = idx % w
+			if (x > 0 and readu8(m, idx - 1) ~= fromVal)
+				or (x < w - 1 and readu8(m, idx + 1) ~= fromVal)
+				or (idx >= w and readu8(m, idx - w) ~= fromVal)
+				or (idx < N - w and readu8(m, idx + w) ~= fromVal) then
+				cur[#cur + 1] = idx
+			end
+		end
+	end
+	for _ = 1, layers do
+		local nxt = {}
+		for s = 1, #cur do
+			local idx = cur[s]
+			local x = idx % w
+			for d = 1, 4 do
+				local n = -1
+				if d == 1 then
+					if x > 0 then n = idx - 1 end
+				elseif d == 2 then
+					if x < w - 1 then n = idx + 1 end
+				elseif d == 3 then
+					if idx >= w then n = idx - w end
+				else
+					if idx < N - w then n = idx + w end
+				end
+				if n >= 0 and readu8(m, n) ~= fromVal then
+					writeu8(m, n, fromVal)
+					nxt[#nxt + 1] = n
+				end
+			end
+		end
+		cur = nxt
+	end
+end
+
+-- Main entry. src = RGBA buffer. Returns (outBuffer, info) or nil if cancelled.
+-- info.bbox = {minX, minY, maxX, maxY} of the subject (nil when nothing is left).
+function Matte.process(src, w, h, opts, hooks)
+	local o = {}
+	for k, v in pairs(Matte.defaults) do o[k] = v end
+	for k, v in pairs(opts or {}) do o[k] = v end
+
+	local N = w * h
+	local aborted = false
+	local work = 0
+
+	local palette = buildPalette(src, w, h, o.bgColor)
+	local np = #palette
+	local pr, pg, pb, pa = {}, {}, {}, {}
+	for i = 1, np do
+		pr[i], pg[i], pb[i], pa[i] = palette[i][1], palette[i][2], palette[i][3], palette[i][4] or 255
+	end
+	local thr = o.tolerance * 1.6
+	local thr2 = thr * thr
+
+	local function matchesPalette(r, g, b, a)
+		for p = 1, np do
+			local dr, dg, db, da = r - pr[p], g - pg[p], b - pb[p], (a - pa[p]) * 1.5
+			if dr * dr + dg * dg + db * db + da * da <= thr2 then return true end
+		end
+		return false
+	end
+
+	local function isBg(idx)
+		local i = idx * 4
+		local a = readu8(src, i + 3)
+		if a < 16 then return true end
+		local r, g, b = readu8(src, i), readu8(src, i + 1), readu8(src, i + 2)
+		if not matchesPalette(r, g, b, a) then return false end
+
+		if o.protectBright and ((r + g + b) / 3) >= 220 then
+			local x, y = idx % w, idx // w
+			for dy = -1, 1 do
+				for dx = -1, 1 do
+					if dx ~= 0 or dy ~= 0 then
+						local nx, ny = x + dx, y + dy
+						if nx >= 0 and nx < w and ny >= 0 and ny < h then
+							local ni = (ny * w + nx) * 4
+							local nr, ng, nb, na = readu8(src, ni), readu8(src, ni + 1), readu8(src, ni + 2), readu8(src, ni + 3)
+			if not matchesPalette(nr, ng, nb, na) then
+								return false
+							end
+						end
+					end
+				end
+			end
+		end
+		return true
+	end
+
+	-- mask: 0 = subject, 1 = background (2/3/4 are temporary labels used below)
+	local m = buffer.create(N)
+	local q = buffer.create(N * 4)
+	local qh, qt = 0, 0
+	local function push(idx)
+		writeu32(q, qt * 4, idx)
+		qt += 1
+	end
+	local function tick(label, frac)
+		work += 1
+		if work % 200000 == 0 and not checkpoint(hooks, frac, label) then
+			aborted = true
+		end
+	end
+
+	---------------------------------------------------------------- 1. flood the background in from the border
+	local function seed(x, y)
+		local idx = y * w + x
+		if readu8(m, idx) == 0 and isBg(idx) then
+			writeu8(m, idx, 1)
+			push(idx)
+		end
+	end
+	for x = 0, w - 1 do seed(x, 0); seed(x, h - 1) end
+	for y = 1, h - 2 do seed(0, y); seed(w - 1, y) end
+
+	while qh < qt and not aborted do
+		local idx = readu32(q, qh * 4)
+		qh += 1
+		local x = idx % w
+		local n
+		if x > 0 then n = idx - 1; if readu8(m, n) == 0 and isBg(n) then writeu8(m, n, 1); push(n) end end
+		if x < w - 1 then n = idx + 1; if readu8(m, n) == 0 and isBg(n) then writeu8(m, n, 1); push(n) end end
+		if idx >= w then n = idx - w; if readu8(m, n) == 0 and isBg(n) then writeu8(m, n, 1); push(n) end end
+		if idx < N - w then n = idx + w; if readu8(m, n) == 0 and isBg(n) then writeu8(m, n, 1); push(n) end end
+		tick("Finding background", 0.05 + 0.35 * (qh / math.max(qt, 1)))
+	end
+	if aborted then return nil end
+
+	---------------------------------------------------------------- 2. optional: background pockets inside the subject
+	if o.removeHoles then
+		local minHole = math.max(24, math.floor(N * 0.0003))
+		for idx = 0, N - 1 do
+			if readu8(m, idx) == 0 and isBg(idx) then
+				qh, qt = 0, 0
+				writeu8(m, idx, 2)
+				push(idx)
+				while qh < qt do
+					local c = readu32(q, qh * 4)
+					qh += 1
+					local x = c % w
+					local n
+					if x > 0 then n = c - 1; if readu8(m, n) == 0 and isBg(n) then writeu8(m, n, 2); push(n) end end
+					if x < w - 1 then n = c + 1; if readu8(m, n) == 0 and isBg(n) then writeu8(m, n, 2); push(n) end end
+					if c >= w then n = c - w; if readu8(m, n) == 0 and isBg(n) then writeu8(m, n, 2); push(n) end end
+					if c < N - w then n = c + w; if readu8(m, n) == 0 and isBg(n) then writeu8(m, n, 2); push(n) end end
+				end
+				local final = (qt >= minHole) and 1 or 3
+				for k = 0, qt - 1 do writeu8(m, readu32(q, k * 4), final) end
+			end
+			tick("Removing holes", 0.4 + 0.1 * (idx / N))
+			if aborted then return nil end
+		end
+		for idx = 0, N - 1 do
+			if readu8(m, idx) == 3 then writeu8(m, idx, 0) end
+		end
+	end
+
+	---------------------------------------------------------------- 3. keep the main subject, drop specks
+	if o.keepLargest then
+		local starts, sizes, largest = {}, {}, 0
+		for idx = 0, N - 1 do
+			if readu8(m, idx) == 0 then
+				qh, qt = 0, 0
+				writeu8(m, idx, 4)
+				push(idx)
+				while qh < qt do
+					local c = readu32(q, qh * 4)
+					qh += 1
+					local x = c % w
+					local n
+					if x > 0 then n = c - 1; if readu8(m, n) == 0 then writeu8(m, n, 4); push(n) end end
+					if x < w - 1 then n = c + 1; if readu8(m, n) == 0 then writeu8(m, n, 4); push(n) end end
+					if c >= w then n = c - w; if readu8(m, n) == 0 then writeu8(m, n, 4); push(n) end end
+					if c < N - w then n = c + w; if readu8(m, n) == 0 then writeu8(m, n, 4); push(n) end end
+				end
+				starts[#starts + 1] = idx
+				sizes[#sizes + 1] = qt
+				if qt > largest then largest = qt end
+			end
+			tick("Finding subject", 0.5 + 0.1 * (idx / N))
+			if aborted then return nil end
+		end
+		local keepMin = largest * 0.1
+		for ci = 1, #starts do
+			local final = (sizes[ci] >= keepMin) and 0 or 1
+			qh, qt = 0, 0
+			writeu8(m, starts[ci], final)
+			push(starts[ci])
+			while qh < qt do
+				local c = readu32(q, qh * 4)
+				qh += 1
+				local x = c % w
+				local n
+				if x > 0 then n = c - 1; if readu8(m, n) == 4 then writeu8(m, n, final); push(n) end end
+				if x < w - 1 then n = c + 1; if readu8(m, n) == 4 then writeu8(m, n, final); push(n) end end
+				if c >= w then n = c - w; if readu8(m, n) == 4 then writeu8(m, n, final); push(n) end end
+				if c < N - w then n = c + w; if readu8(m, n) == 4 then writeu8(m, n, final); push(n) end end
+			end
+			tick("Cleaning up", 0.6)
+			if aborted then return nil end
+		end
+	end
+
+	---------------------------------------------------------------- 4. edge shift
+	if o.edgeShift > 0 then
+		spread(m, w, h, 0, o.edgeShift)
+	elseif o.edgeShift < 0 then
+		spread(m, w, h, 1, -o.edgeShift)
+	end
+	if not checkpoint(hooks, 0.65, "Softening edges") then return nil end
+
+	---------------------------------------------------------------- 5. write alpha + collect boundary
+	local out = buffer.create(N * 4)
+	buffer.copy(out, 0, src, 0, N * 4)
+	local boundary = {}
+	local subjectCount = 0
+	local minX, minY, maxX, maxY = w, h, -1, -1
+	for idx = 0, N - 1 do
+		if readu8(m, idx) == 1 then
+			writeu8(out, idx * 4 + 3, 0)
+			local x = idx % w
+			if (x > 0 and readu8(m, idx - 1) == 0)
+				or (x < w - 1 and readu8(m, idx + 1) == 0)
+				or (idx >= w and readu8(m, idx - w) == 0)
+				or (idx < N - w and readu8(m, idx + w) == 0) then
+				boundary[#boundary + 1] = idx
+			end
+		else
+			local x = idx % w
+			local y = idx // w
+			subjectCount += 1
+			if x < minX then minX = x end
+			if x > maxX then maxX = x end
+			if y < minY then minY = y end
+			if y > maxY then maxY = y end
+		end
+		tick("Softening edges", 0.65 + 0.1 * (idx / N))
+		if aborted then return nil end
+	end
+
+	---------------------------------------------------------------- 6. soft edge band + defringe
+	local R = math.floor(o.softness + 0.5)
+	if R > 0 and #boundary > 0 then
+		local bd = buffer.create(N) -- layer number (1..R) for subject pixels in the band
+		local bandIdx, bandK, bandR, bandG, bandB, bandH = {}, {}, {}, {}, {}, {}
+		local ci, cr, cg, cb, ch = {}, {}, {}, {}, {}
+		for s = 1, #boundary do
+			local idx = boundary[s]
+			local i4 = idx * 4
+			ci[s] = idx
+			if readu8(src, i4 + 3) >= 16 then
+				ch[s] = true
+				cr[s], cg[s], cb[s] = readu8(src, i4), readu8(src, i4 + 1), readu8(src, i4 + 2)
+			else
+				ch[s] = false
+				cr[s], cg[s], cb[s] = 0, 0, 0
+			end
+		end
+		for k = 1, R do
+			local ni, nr, ng, nb, nh = {}, {}, {}, {}, {}
+			for s = 1, #ci do
+				local idx = ci[s]
+				local x = idx % w
+				for d = 1, 4 do
+					local n = -1
+					if d == 1 then
+						if x > 0 then n = idx - 1 end
+					elseif d == 2 then
+						if x < w - 1 then n = idx + 1 end
+					elseif d == 3 then
+						if idx >= w then n = idx - w end
+					else
+						if idx < N - w then n = idx + w end
+					end
+					if n >= 0 and readu8(m, n) == 0 and readu8(bd, n) == 0 then
+						writeu8(bd, n, k)
+						local c = #ni + 1
+						ni[c], nr[c], ng[c], nb[c], nh[c] = n, cr[s], cg[s], cb[s], ch[s]
+						local e = #bandIdx + 1
+						bandIdx[e], bandK[e] = n, k
+						bandR[e], bandG[e], bandB[e], bandH[e] = cr[s], cg[s], cb[s], ch[s]
+					end
+				end
+			end
+			ci, cr, cg, cb, ch = ni, nr, ng, nb, nh
+		end
+
+		local win = R + 2
+		for bi = 1, #bandIdx do
+			local idx = bandIdx[bi]
+			local x, y = idx % w, idx // w
+			local i4 = idx * 4
+			local sr, sg, sb, sa = readu8(src, i4), readu8(src, i4 + 1), readu8(src, i4 + 2), readu8(src, i4 + 3)
+
+			-- subject colour estimate from nearby pixels that are not in the band
+			local fr, fg, fb, fc = 0, 0, 0, 0
+			for yy = math.max(0, y - win), math.min(h - 1, y + win) do
+				local row = yy * w
+				for xx = math.max(0, x - win), math.min(w - 1, x + win) do
+					local n = row + xx
+					if readu8(m, n) == 0 and readu8(bd, n) == 0 then
+						local n4 = n * 4
+						fr += readu8(src, n4)
+						fg += readu8(src, n4 + 1)
+						fb += readu8(src, n4 + 2)
+						fc += 1
+					end
+				end
+			end
+			local Fr, Fg, Fb = sr, sg, sb
+			if fc > 0 then Fr, Fg, Fb = fr / fc, fg / fc, fb / fc end
+
+			local a, useColour = 0, false
+			if bandH[bi] then
+				local Br, Bg, Bb = bandR[bi], bandG[bi], bandB[bi]
+				local vr, vg, vb = Fr - Br, Fg - Bg, Fb - Bb
+				local len2 = vr * vr + vg * vg + vb * vb
+				if len2 >= 400 then
+					a = math.clamp(((sr - Br) * vr + (sg - Bg) * vg + (sb - Bb) * vb) / len2, 0, 1)
+					useColour = true
+				end
+			end
+			if not useColour then
+				a = (R - bandK[bi] + 1) / (R + 1)
+			end
+			a = a * (sa / 255)
+			if a > 0.98 then a = 1 end
+
+			if a < 0.04 then
+				writeu8(out, i4 + 3, 0)
+			else
+				local r, g, b = sr, sg, sb
+				if o.defringe then
+					if useColour and a >= 0.2 then
+						local Br, Bg, Bb = bandR[bi], bandG[bi], bandB[bi]
+						r = math.clamp((sr - (1 - a) * Br) / a, 0, 255)
+						g = math.clamp((sg - (1 - a) * Bg) / a, 0, 255)
+						b = math.clamp((sb - (1 - a) * Bb) / a, 0, 255)
+					else
+						r, g, b = Fr, Fg, Fb
+					end
+				end
+				writeu8(out, i4, math.floor(r + 0.5))
+				writeu8(out, i4 + 1, math.floor(g + 0.5))
+				writeu8(out, i4 + 2, math.floor(b + 0.5))
+				writeu8(out, i4 + 3, math.floor(a * 255 + 0.5))
+			end
+			if bi % 20000 == 0 and not checkpoint(hooks, 0.75 + 0.2 * (bi / #bandIdx), "Softening edges") then
+				return nil
+			end
+		end
+	end
+
+	-- transparent pixels next to the subject borrow its colour so scaling doesn't create dark halos
+	for s = 1, #boundary do
+		local idx = boundary[s]
+		local x = idx % w
+		local n = -1
+		if x > 0 and readu8(m, idx - 1) == 0 then n = idx - 1
+		elseif x < w - 1 and readu8(m, idx + 1) == 0 then n = idx + 1
+		elseif idx >= w and readu8(m, idx - w) == 0 then n = idx - w
+		elseif idx < N - w and readu8(m, idx + w) == 0 then n = idx + w end
+		if n >= 0 then
+			buffer.copy(out, idx * 4, out, n * 4, 3)
+		end
+	end
+
+	local bbox = nil
+	if maxX >= 0 then bbox = { minX, minY, maxX, maxY } end
+	return out, { bbox = bbox, palette = palette, subjectFraction = subjectCount / N }
+end
+
+-- Where the exported image comes from. Auto-crop = subject bounds + padding, snapped to a multiple of `snap`.
+function Matte.exportLayout(w, h, bbox, opt)
+	local cx, cy, cw, ch = 0, 0, w, h
+	if opt.autoCrop and bbox then
+		local pad = opt.pad or 16
+		local snap = opt.snap or 8
+		local bw = bbox[3] - bbox[1] + 1
+		local bh = bbox[4] - bbox[2] + 1
+		cw = math.ceil((bw + pad * 2) / snap) * snap
+		ch = math.ceil((bh + pad * 2) / snap) * snap
+		cx = bbox[1] - (cw - bw) // 2
+		cy = bbox[2] - (ch - bh) // 2
+	end
+	local ew, eh = cw, ch
+	if opt.maxSide and math.max(cw, ch) > opt.maxSide then
+		local scale = opt.maxSide / math.max(cw, ch)
+		ew = math.max(1, math.floor(cw * scale + 0.5))
+		eh = math.max(1, math.floor(ch * scale + 0.5))
+	end
+	return { cx = cx, cy = cy, cw = cw, ch = ch, ew = ew, eh = eh }
+end
+
+-- Crop + (optionally) downscale an RGBA buffer according to an exportLayout.
+function Matte.render(src, w, h, L, hooks)
+	local ew, eh = L.ew, L.eh
+	local out = buffer.create(ew * eh * 4)
+	if ew == L.cw and eh == L.ch then
+		for dy = 0, eh - 1 do
+			local sy = L.cy + dy
+			if sy >= 0 and sy < h then
+				for dx = 0, ew - 1 do
+					local sx = L.cx + dx
+					if sx >= 0 and sx < w then
+						buffer.copy(out, (dy * ew + dx) * 4, src, (sy * w + sx) * 4, 4)
+					end
+				end
+			end
+			if dy % 128 == 0 and not checkpoint(hooks, dy / eh, "Preparing export") then return nil end
+		end
+		return out
+	end
+	local fx, fy = L.cw / ew, L.ch / eh
+	for dy = 0, eh - 1 do
+		local y0 = math.floor(L.cy + dy * fy)
+		local y1 = math.max(y0 + 1, math.ceil(L.cy + (dy + 1) * fy))
+		for dx = 0, ew - 1 do
+			local x0 = math.floor(L.cx + dx * fx)
+			local x1 = math.max(x0 + 1, math.ceil(L.cx + (dx + 1) * fx))
+			local sa, sr, sg, sb = 0, 0, 0, 0
+			for sy = math.max(y0, 0), math.min(y1 - 1, h - 1) do
+				for sx = math.max(x0, 0), math.min(x1 - 1, w - 1) do
+					local i = (sy * w + sx) * 4
+					local a = readu8(src, i + 3)
+					if a > 0 then
+						sa += a
+						sr += readu8(src, i) * a
+						sg += readu8(src, i + 1) * a
+						sb += readu8(src, i + 2) * a
+					end
+				end
+			end
+			if sa > 0 then
+				local o = (dy * ew + dx) * 4
+				writeu8(out, o, math.floor(sr / sa + 0.5))
+				writeu8(out, o + 1, math.floor(sg / sa + 0.5))
+				writeu8(out, o + 2, math.floor(sb / sa + 0.5))
+				writeu8(out, o + 3, math.min(255, math.floor(sa / ((x1 - x0) * (y1 - y0)) + 0.5)))
+			end
+		end
+		if dy % 64 == 0 and not checkpoint(hooks, dy / eh, "Preparing export") then return nil end
+	end
+	return out
+end
+
+-- Exact transparency from two renders of the same view: one on a white backdrop, one on black.
+-- alpha = 1 - (white - black) / backdropContrast, colour = black render un-mixed.
+function Matte.fromTwoShotsFlat(wb, bb, w, h, hooks)
+	local N = w * h
+	local s = math.max(1, math.min(6, w // 4, h // 4))
+	local function corners(buf)
+		local sr, sg, sb, c = 0, 0, 0, 0
+		for _, ox in ipairs({ 0, w - s }) do
+			for _, oy in ipairs({ 0, h - s }) do
+				for y = oy, oy + s - 1 do
+					for x = ox, ox + s - 1 do
+						local i = (y * w + x) * 4
+						sr += readu8(buf, i)
+						sg += readu8(buf, i + 1)
+						sb += readu8(buf, i + 2)
+						c += 1
+					end
+				end
+			end
+		end
+		return sr / c, sg / c, sb / c
+	end
+	local Wr, Wg, Wb = corners(wb)
+	local Br, Bg, Bb = corners(bb)
+	local dr, dg, db = Wr - Br, Wg - Bg, Wb - Bb
+	if math.min(dr, dg, db) < 40 then
+		return nil, "the white and black renders came out identical, so Studio did not redraw the 3D view. Click once inside the 3D viewport so it is the active window, then try again."
+	end
+	local out = buffer.create(N * 4)
+	local minX, minY, maxX, maxY = w, h, -1, -1
+	for y = 0, h - 1 do
+		for x = 0, w - 1 do
+			local i = (y * w + x) * 4
+			local ar = 1 - (readu8(wb, i) - readu8(bb, i)) / dr
+			local ag = 1 - (readu8(wb, i + 1) - readu8(bb, i + 1)) / dg
+			local ab = 1 - (readu8(wb, i + 2) - readu8(bb, i + 2)) / db
+			local a = math.clamp((ar + ag + ab) / 3, 0, 1)
+			if a > 0.02 then
+				if a > 0.985 then a = 1 end
+				local inv = 1 - a
+				writeu8(out, i, math.floor(math.clamp((readu8(bb, i) - inv * Br) / a, 0, 255) + 0.5))
+				writeu8(out, i + 1, math.floor(math.clamp((readu8(bb, i + 1) - inv * Bg) / a, 0, 255) + 0.5))
+				writeu8(out, i + 2, math.floor(math.clamp((readu8(bb, i + 2) - inv * Bb) / a, 0, 255) + 0.5))
+				writeu8(out, i + 3, math.floor(a * 255 + 0.5))
+				if a > 0.03 then
+					if x < minX then minX = x end
+					if x > maxX then maxX = x end
+					if y < minY then minY = y end
+					if y > maxY then maxY = y end
+				end
+			end
+		end
+		if y % 32 == 0 and not checkpoint(hooks, y / h, "Combining renders") then return nil end
+	end
+	local bbox = nil
+	if maxX >= 0 then bbox = { minX, minY, maxX, maxY } end
+	return out, { bbox = bbox }
+end
+
+-- Same idea, but the backdrop reference colour is interpolated between the four image corners,
+-- so haze or a slight gradient on the backdrop (it is never a perfect 255 / 0) does not leak into the alpha.
+function Matte.fromTwoShots(wb, bb, w, h, hooks)
+	-- Screenshots are sRGB; compositing and alpha recovery must happen in linear light.
+	local function linear(v)
+		v = v / 255
+		return (v <= 0.04045 and v / 12.92 or ((v + 0.055) / 1.055) ^ 2.4) * 255
+	end
+	local function encoded(v)
+		v = math.clamp(v / 255, 0, 1)
+		return math.floor((v <= 0.0031308 and v * 12.92 or 1.055 * v ^ (1 / 2.4) - 0.055) * 255 + 0.5)
+	end
+	local function convert(src)
+		local dst = buffer.create(buffer.len(src))
+		for i = 0, w * h - 1 do
+			for c = 0, 2 do writeu8(dst, i * 4 + c, math.floor(linear(readu8(src, i * 4 + c)) + 0.5)) end
+			writeu8(dst, i * 4 + 3, 255)
+			if i % 65536 == 0 and not checkpoint(hooks, 0, 'Preparing linear matte') then return nil end
+		end
+		return dst
+	end
+	wb, bb = convert(wb), convert(bb)
+	if not wb or not bb then return nil end
+	local N = w * h
+	local s = math.max(1, math.min(6, w // 4, h // 4))
+	local function patch(buf, ox, oy)
+		local sr, sg, sb, c = 0, 0, 0, 0
+		for y = oy, oy + s - 1 do
+			for x = ox, ox + s - 1 do
+				local i = (y * w + x) * 4
+				sr += readu8(buf, i)
+				sg += readu8(buf, i + 1)
+				sb += readu8(buf, i + 2)
+				c += 1
+			end
+		end
+		return { sr / c, sg / c, sb / c }
+	end
+	local Wtl, Wtr = patch(wb, 0, 0), patch(wb, w - s, 0)
+	local Wbl, Wbr = patch(wb, 0, h - s), patch(wb, w - s, h - s)
+	local Btl, Btr = patch(bb, 0, 0), patch(bb, w - s, 0)
+	local Bbl, Bbr = patch(bb, 0, h - s), patch(bb, w - s, h - s)
+	for c = 1, 3 do
+		local lowest = math.min(Wtl[c] - Btl[c], Wtr[c] - Btr[c], Wbl[c] - Bbl[c], Wbr[c] - Bbr[c])
+		if lowest < 40 then
+			return nil, 'the white and black renders came out identical, so Studio did not redraw the 3D view. Click once inside the 3D viewport so it is the active window, then try again.'
+		end
+	end
+	local out = buffer.create(N * 4)
+	local minX, minY, maxX, maxY = w, h, -1, -1
+	local wL, wR, bL, bR = { 0, 0, 0 }, { 0, 0, 0 }, { 0, 0, 0 }, { 0, 0, 0 }
+	for y = 0, h - 1 do
+		local v = y / math.max(h - 1, 1)
+		for c = 1, 3 do
+			wL[c] = Wtl[c] + (Wbl[c] - Wtl[c]) * v
+			wR[c] = Wtr[c] + (Wbr[c] - Wtr[c]) * v
+			bL[c] = Btl[c] + (Bbl[c] - Btl[c]) * v
+			bR[c] = Btr[c] + (Bbr[c] - Btr[c]) * v
+		end
+		local wDr, wDg, wDb = wR[1] - wL[1], wR[2] - wL[2], wR[3] - wL[3]
+		local bDr, bDg, bDb = bR[1] - bL[1], bR[2] - bL[2], bR[3] - bL[3]
+		for x = 0, w - 1 do
+			local u = x / math.max(w - 1, 1)
+			local Wr, Wg, Wb = wL[1] + wDr * u, wL[2] + wDg * u, wL[3] + wDb * u
+			local Br, Bg, Bb = bL[1] + bDr * u, bL[2] + bDg * u, bL[3] + bDb * u
+			local i = (y * w + x) * 4
+			local pwr, pwg, pwb = readu8(wb, i), readu8(wb, i + 1), readu8(wb, i + 2)
+			local pbr, pbg, pbb = readu8(bb, i), readu8(bb, i + 1), readu8(bb, i + 2)
+			local dR, dG, dB = Wr - Br, Wg - Bg, Wb - Bb
+			local ar = 1 - (pwr - pbr) / (math.abs(dR) < 1 and 1 or dR)
+			local ag = 1 - (pwg - pbg) / (math.abs(dG) < 1 and 1 or dG)
+			local ab = 1 - (pwb - pbb) / (math.abs(dB) < 1 and 1 or dB)
+			local values = {}
+			if ar == ar and ar > -0.25 and ar < 1.25 then values[#values + 1] = ar end
+			if ag == ag and ag > -0.25 and ag < 1.25 then values[#values + 1] = ag end
+			if ab == ab and ab > -0.25 and ab < 1.25 then values[#values + 1] = ab end
+			local a = 0
+			if #values > 0 then
+				table.sort(values)
+				a = values[math.ceil(#values / 2)]
+			end
+			a = math.clamp(a, 0, 1)
+			if a > 0.02 then
+				if a > 0.985 then a = 1 end
+				local inv = 1 - a
+				writeu8(out, i, encoded((pbr - inv * Br) / a))
+				writeu8(out, i + 1, encoded((pbg - inv * Bg) / a))
+				writeu8(out, i + 2, encoded((pbb - inv * Bb) / a))
+				writeu8(out, i + 3, math.floor(a * 255 + 0.5))
+				if a > 0.03 then
+					if x < minX then minX = x end
+					if x > maxX then maxX = x end
+					if y < minY then minY = y end
+					if y > maxY then maxY = y end
+				end
+			end
+		end
+		if y % 32 == 0 and not checkpoint(hooks, y / h, 'Combining renders') then return nil end
+	end
+	local bbox = nil
+	if maxX >= 0 then bbox = { minX, minY, maxX, maxY } end
+	return out, { bbox = bbox }
+end
+
+-- Dilates the alpha mask outward by `widthPx` and paints a solid colour in that ring,
+-- underneath the existing subject (so it reads as an outline/stroke around the cutout).
+function Matte.applyStroke(src, w, h, widthPx, color, hooks)
+	if widthPx <= 0 then return src end
+	local N = w * h
+	local out = buffer.create(N * 4)
+	buffer.copy(out, 0, src, 0, N * 4)
+
+	-- Restrict the stroke to transparent pixels connected to the image edge.
+	-- This prevents an outline from appearing inside mouths, glasses, and gaps.
+	local outside = buffer.create(N) -- 0 = other, 1 = exterior, 2 = stroke
+	local queue = buffer.create(N * 4)
+	local head, tail = 0, 0
+	local function push(idx)
+		writeu32(queue, tail * 4, idx)
+		tail += 1
+	end
+	local function seed(idx)
+		if readu8(outside, idx) == 0 and readu8(src, idx * 4 + 3) <= 4 then
+			writeu8(outside, idx, 1)
+			push(idx)
+		end
+	end
+	for x = 0, w - 1 do seed(x); seed((h - 1) * w + x) end
+	for y = 1, h - 2 do seed(y * w); seed(y * w + w - 1) end
+	while head < tail do
+		local idx = readu32(queue, head * 4)
+		head += 1
+		local x = idx % w
+		local function visit(n)
+			if readu8(outside, n) == 0 and readu8(src, n * 4 + 3) <= 4 then
+				writeu8(outside, n, 1)
+				push(n)
+			end
+		end
+		if x > 0 then visit(idx - 1) end
+		if x < w - 1 then visit(idx + 1) end
+		if idx >= w then visit(idx - w) end
+		if idx < N - w then visit(idx + w) end
+		if head % 400000 == 0 and not checkpoint(hooks, 0.3 * (head / math.max(tail, 1)), 'Finding outside edge') then return nil end
+	end
+
+	local cr, cg, cb = color[1], color[2], color[3]
+	local frontier = {}
+	for idx = 0, N - 1 do
+		if readu8(src, idx * 4 + 3) > 4 then
+			local x = idx % w
+			if (x > 0 and readu8(outside, idx - 1) == 1)
+				or (x < w - 1 and readu8(outside, idx + 1) == 1)
+				or (idx >= w and readu8(outside, idx - w) == 1)
+				or (idx < N - w and readu8(outside, idx + w) == 1) then
+				frontier[#frontier + 1] = idx
+			end
+		end
+	end
+
+	for layer = 1, widthPx do
+		local nextFrontier = {}
+		for s = 1, #frontier do
+			local idx = frontier[s]
+			local x = idx % w
+			local function paint(n)
+				if n >= 0 and readu8(outside, n) == 1 then
+					writeu8(outside, n, 2)
+					local i4 = n * 4
+					writeu8(out, i4, cr)
+					writeu8(out, i4 + 1, cg)
+					writeu8(out, i4 + 2, cb)
+					writeu8(out, i4 + 3, 255)
+					nextFrontier[#nextFrontier + 1] = n
+				end
+			end
+			if x > 0 then paint(idx - 1) end
+			if x < w - 1 then paint(idx + 1) end
+			if idx >= w then paint(idx - w) end
+			if idx < N - w then paint(idx + w) end
+		end
+		frontier = nextFrontier
+		if not checkpoint(hooks, 0.3 + 0.6 * (layer / widthPx), 'Drawing stroke') then return nil end
+	end
+	return out
+end
+-- Multiplies the RGB of every visible pixel by `mult` (1 = unchanged). Alpha is untouched.
+function Matte.applyBrightness(src, w, h, mult, hooks)
+	if mult == 1 then return src end
+	local N = w * h
+	local out = buffer.create(N * 4)
+	for idx = 0, N - 1 do
+		local i = idx * 4
+		local a = readu8(src, i + 3)
+		if a == 0 then
+			writeu32(out, i, readu32(src, i))
+		else
+			writeu8(out, i, math.clamp(math.floor(readu8(src, i) * mult + 0.5), 0, 255))
+			writeu8(out, i + 1, math.clamp(math.floor(readu8(src, i + 1) * mult + 0.5), 0, 255))
+			writeu8(out, i + 2, math.clamp(math.floor(readu8(src, i + 2) * mult + 0.5), 0, 255))
+			writeu8(out, i + 3, a)
+		end
+		if idx % 400000 == 0 and not checkpoint(hooks, idx / N, 'Adjusting brightness') then return nil end
+	end
+	return out
+end
+
+return Matte
+]]></ProtectedString>
+				<string name="ScriptGuid">{A733A64D-3B80-48CA-965B-1EEF38EDFB1A}</string>
+				<BinaryString name="AttributesSerialize"></BinaryString>
+				<SecurityCapabilities name="Capabilities">0</SecurityCapabilities>
+				<bool name="DefinesCapabilities">false</bool>
+				<string name="Name">Matte</string>
+				<BinaryString name="SerializedOverrides"></BinaryString>
+				<int64 name="SourceAssetId">-1</int64>
+				<SharedString name="Tags">yuZpQdnvvUBOTYh1jqZ2cA==</SharedString>
+			</Properties>
+		</Item>
+		<Item class="ModuleScript" referent="RBX895121E189DD494B9996C3C16208B4A6">
+			<Properties>
+				<Content name="LinkedSource"><null></null></Content>
+				<ProtectedString name="Source"><![CDATA[-- Non-destructive RGBA styles. These are image treatments, not replacement shaders.
+local Effects = {}
+function Effects.apply(src, w, h, style, hooks)
+  if not style or style == 'Clean' then return src end
+  local out = buffer.create(buffer.len(src))
+  buffer.copy(out, 0, src)
+  local function luminance(x, y)
+    local i = (math.clamp(y, 0, h - 1) * w + math.clamp(x, 0, w - 1)) * 4
+    return buffer.readu8(src, i) * 0.2126 + buffer.readu8(src, i + 1) * 0.7152 + buffer.readu8(src, i + 2) * 0.0722
+  end
+  for y = 0, h - 1 do
+    for x = 0, w - 1 do
+      local i = (y * w + x) * 4
+      local r, g, b = buffer.readu8(src, i), buffer.readu8(src, i + 1), buffer.readu8(src, i + 2)
+      local l = luminance(x, y)
+      if style == 'Silhouette' then
+        r, g, b = 26, 30, 48
+      elseif style == 'Duotone' then
+        local t = l / 255
+        r, g, b = 35 + 210 * t, 24 + 181 * t, 89 + 88 * t
+      elseif style == 'Cel shade' then
+        r, g, b = math.floor(r / 64) * 64, math.floor(g / 64) * 64, math.floor(b / 64) * 64
+      elseif style == 'Sketch' then
+        local edge = math.abs(luminance(x + 1, y) - luminance(x - 1, y)) + math.abs(luminance(x, y + 1) - luminance(x, y - 1))
+        r = math.clamp(245 - edge * 2 - (255 - l) * 0.12, 20, 245)
+        g, b = r, r
+      elseif style == 'Halftone' then
+        local dx, dy = x % 6 - 2.5, y % 6 - 2.5
+        local ink = dx * dx + dy * dy < (1 - l / 255) * 18
+        r = ink and 30 or 242
+        g, b = r, r
+      elseif style == 'Pixel art' then
+        local sx, sy = math.min(w - 1, math.floor(x / 6) * 6 + 3), math.min(h - 1, math.floor(y / 6) * 6 + 3)
+        local p = (sy * w + sx) * 4
+        r, g, b = buffer.readu8(src, p), buffer.readu8(src, p + 1), buffer.readu8(src, p + 2)
+        buffer.writeu8(out, i + 3, buffer.readu8(src, p + 3))
+      end
+      buffer.writeu8(out, i, math.clamp(math.floor(r), 0, 255))
+      buffer.writeu8(out, i + 1, math.clamp(math.floor(g), 0, 255))
+      buffer.writeu8(out, i + 2, math.clamp(math.floor(b), 0, 255))
+    end
+    if y % 32 == 0 and hooks and hooks.step and hooks.step(y / h, 'Styling') == false then return nil end
+  end
+  return out
+end
+
+-- Separable alpha blur, composited underneath the subject.
+function Effects.aura(src, w, h, radius, shadow, hooks)
+  radius = math.clamp(math.floor(radius), 1, 20)
+  local horizontal, blurred = buffer.create(w * h * 4), buffer.create(w * h * 4)
+  for y = 0, h - 1 do
+    local sum = 0
+    for x = -radius, radius do
+      if x >= 0 and x < w then sum += buffer.readu8(src, (y * w + x) * 4 + 3) end
+    end
+    for x = 0, w - 1 do
+      buffer.writef32(horizontal, (y * w + x) * 4, sum / (radius * 2 + 1))
+      local remove, add = x - radius, x + radius + 1
+      if remove >= 0 then sum -= buffer.readu8(src, (y * w + remove) * 4 + 3) end
+      if add < w then sum += buffer.readu8(src, (y * w + add) * 4 + 3) end
+    end
+    if y % 32 == 0 and hooks and hooks.step and hooks.step(y / h, 'Blurring') == false then return nil end
+  end
+  for x = 0, w - 1 do
+    local sum = 0
+    for y = 0, radius do if y < h then sum += buffer.readf32(horizontal, (y * w + x) * 4) end end
+    for y = 0, h - 1 do
+      buffer.writef32(blurred, (y * w + x) * 4, sum / (radius * 2 + 1))
+      local remove, add = y - radius, y + radius + 1
+      if remove >= 0 then sum -= buffer.readf32(horizontal, (remove * w + x) * 4) end
+      if add < h then sum += buffer.readf32(horizontal, (add * w + x) * 4) end
+    end
+    if x % 32 == 0 and hooks and hooks.step and hooks.step(x / w, 'Blurring') == false then return nil end
+  end
+  local out = buffer.create(buffer.len(src))
+  for y = 0, h - 1 do
+    for x = 0, w - 1 do
+      local i = (y * w + x) * 4
+      local sx, sy = x - (shadow and radius or 0), y - (shadow and radius or 0)
+      local a = buffer.readu8(src, i + 3) / 255
+      local under = 0
+      if sx >= 0 and sy >= 0 then under = buffer.readf32(blurred, (sy * w + sx) * 4) / 255 * (shadow and 0.65 or 0.9) end
+      local alpha = a + under * (1 - a)
+      for c = 0, 2 do
+        local color = shadow and 15 or ({ 110, 180, 255 })[c + 1]
+        local value = alpha > 0 and (buffer.readu8(src, i + c) * a + color * under * (1 - a)) / alpha or 0
+        buffer.writeu8(out, i + c, math.clamp(math.floor(value), 0, 255))
+      end
+      buffer.writeu8(out, i + 3, math.clamp(math.floor(alpha * 255), 0, 255))
+    end
+  end
+  return out
+end
+return Effects]]></ProtectedString>
+				<string name="ScriptGuid">{40466961-F708-421F-A905-F68251C95C01}</string>
+				<BinaryString name="AttributesSerialize"></BinaryString>
+				<SecurityCapabilities name="Capabilities">0</SecurityCapabilities>
+				<bool name="DefinesCapabilities">false</bool>
+				<string name="Name">IconEffects</string>
+				<BinaryString name="SerializedOverrides"></BinaryString>
+				<int64 name="SourceAssetId">-1</int64>
+				<SharedString name="Tags">yuZpQdnvvUBOTYh1jqZ2cA==</SharedString>
+			</Properties>
+		</Item>
+	</Item>
+	<SharedStrings>
+		<SharedString md5="yuZpQdnvvUBOTYh1jqZ2cA=="></SharedString>
+	</SharedStrings>
+</roblox>
